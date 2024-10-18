@@ -540,5 +540,10 @@ when the default is debug.",
         return _verb["process_func"](self, args[0], args[1:])
 
 
-lets_instance = Lets()
-sys.exit(lets_instance.process_arguments(sys.argv[1:]))
+def main():
+    lets_instance = Lets()
+    sys.exit(lets_instance.process_arguments(sys.argv[1:]))
+
+
+if __name__ == "__main__":
+    main()

@@ -32,14 +32,14 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url="https://github.com/lonesomebyte537/lets",
     license="Apache License 2.0",
-    package_dir={"": "src"},
-    package_data={"lets": ["lets.py", "plugins/__init__.py"]},
+    package_data={"lets": ["resources/*.*"]},
     include_package_data=True,
+    packages=setuptools.find_packages(exclude=["tests", "tests/*"]),
     install_requires=requires,
     platforms=["any"],
     python_requires=">=3.8",
     entry_points = {
-        'console_scripts': ['lets=lets.__main__:main'],
+        'console_scripts': ['lets=lets:main'],
     },
     classifiers=[
         "Development Status :: 4 - Beta",  # 3 - Alpha, 4 - Beta, 5 - Production/Stable
