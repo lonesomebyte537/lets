@@ -39,6 +39,10 @@ SettingsType = Dict[str, SettingContextType]
 _registered_verbs: List[RegisteredVerbType] = []
 
 
+class Password:
+    """Type used for settings containing password"""
+
+
 def verb(verb_name: Optional[str] = None) -> Callable[[VerbProcessFuncType], VerbProcessFuncType]:
     """Decorate function as a verb handler.
 
@@ -74,7 +78,7 @@ class Lets:
                 raise ValueError(f"Verb {context}.{name} already exists")
             self._verbs.append({"context": context, "verb": name, "process_func": _verb["func"]})
 
-        self.register_setting("lets", "plugin_folders", "List of folders to look for plugins", None, [])
+        self.register_setting("lets", "plugin_folders", "List of folders to look for plugins", None, set())
         self.register_setting("lets", "verbose", "Sets the default verbose mode", ["on", "off"], "off")
         terminal_width = min((shutil.get_terminal_size()[0], 100))
         self._wrapper = textwrap.TextWrapper(width=terminal_width)
@@ -126,7 +130,8 @@ class Lets:
             # Update the values
             for c in file_settings:
                 for s in file_settings[c]:
-                    self._registered_settings[c][s]["value"] = file_settings[c][s]
+                    self._registered_settings[c][s]["value"] = set(file_settings[c][s]) if \
+                        self._registered_settings[c][s]["type"] == set else file_settings[c][s]
 
     def _save_settings(self) -> None:
         file = pathlib.Path.home() / ".letsrc"
@@ -241,11 +246,13 @@ class Lets:
             for c, s in settings:
                 # Skip protected settings
                 if not s.startswith("_"):
-                    results[f"{c}.{s}"] = self._registered_settings[c][s]["value"]
+                    results[f"{c}.{s}"] = self._registered_settings[c][s]
         max_length = max(len(r) for r in results)
-        for s, v in results.items():
-            value = ", ".join(v) if isinstance(v, list) else ", ".join([f"{key}:{val}" for key,val in v.items()]) if isinstance(v, dict) else v
-            self.info(f"{s:>{max_length}}: {value}")
+        for name, setting in results.items():
+            value = ", ".join(setting["value"]) if isinstance(setting["value"], list) or \
+                isinstance(setting["value"], set) else ", ".join([f"{key}:{val}" for key,val in setting["value"].items()]) \
+                if isinstance(setting["value"], dict) else "***" if setting["type"] == Password else setting["value"]
+            self.info(f"{name:>{max_length}}: {value}")
         return 0
 
     def set(self, _: "Lets", __: str, args: List[str]) -> int:
@@ -294,6 +301,8 @@ class Lets:
 
         if setting["type"] == list:
             setting["value"].extend(args[1:])
+        elif setting["type"] == set:
+            setting["value"].update(args[1:])
         elif setting["type"] == dict:
             # Check whether all values are in the form of key:value
             invalid_values = [val for val in args[1:] if ":" not in val]
@@ -336,7 +345,8 @@ class Lets:
         return 0
 
     # pylint: disable=too-many-arguments
-    def register_setting(self, context: str, setting: str, description: str, options: List[str], default: Any) -> None:
+    def register_setting(self, context: str, setting: str, description: str, options: List[str], default: Any,
+            setting_type: Optional[type] = None) -> None:
         """Register the given setting for the given context."""
         if self._registered_settings.get(context, {}).get(setting, None) is not None:
             raise ValueError(f"Setting {context}.{setting} already exists")
@@ -347,7 +357,7 @@ class Lets:
             "description": description,
             "options": options,
             "value": default,
-            "type": type(default),
+            "type": setting_type or type(default),
         }
 
     @property
