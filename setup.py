@@ -15,8 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import os
-
 import setuptools
 
 with open("README.md", "r") as file_handle:
@@ -26,7 +24,7 @@ requires = open("requirements.txt").read().strip().split("\n")
 
 setuptools.setup(
     name="lets",
-    version="0.2",
+    version="0.3",
     description="Test framework",
     long_description=long_description,
     long_description_content_type="text/markdown",
