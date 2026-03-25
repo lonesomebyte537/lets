@@ -15,9 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from .core import LetsCore, LetsExcept, Password, VerbProcessFuncType, _get_namespace, _registered_verbs
+from .core import LetsCore, LetsExcept, Password, VerbProcessFuncType, _get_namespace, _registered_verbs, _display_width, _display_ljust
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from io import UnsupportedOperation
 import os
+import signal
 import pty
 import re
 import select
@@ -98,13 +100,29 @@ class DevContainer(ExecutionEnvironment):
 
 
 class Lets(LetsCore):
-    ####################################################
-    ######     Functions to initialize plugins    ######
-    ####################################################
+    def __init__(self):
+        super().__init__()
+        self._default_env: Optional[ExecutionEnvironment] = None
+
+    #####################################################
+    ######     Functions to initialize plugins     ######
+    #####################################################
     # pylint: disable=too-many-arguments
     def register_setting(self, setting: str, description: str, options: List[str], default: Any,
             setting_type: Optional[type] = None) -> None:
-        """Register the given setting for the given namespace."""
+        """Register the given setting for the given namespace.
+
+        Args:
+            setting: The name of the setting to register
+            description: The description of the setting to show in the help message
+            options: The list of options for the setting to show in the help
+ .                   message. This can be an empty list if the setting does not have a
+                     predefined set of options.
+            default: The default value of the setting
+            setting_type: The type of the setting. This is used to validate the
+                          value when setting the setting. If this is None, the type of the
+                          default value is used.
+        """
         namespace = _get_namespace()
         if self._registered_settings.get(namespace, {}).get(setting, None) is not None:
             raise ValueError(f"Setting {namespace}.{setting} already exists")
@@ -118,9 +136,9 @@ class Lets(LetsCore):
             "type": setting_type or type(default),
         }
 
-    ####################################################
-    ######       Functions to inform users        ######
-    ####################################################
+    #####################################################
+    ######        Functions to inform users        ######
+    #####################################################
     def info(self, text: str, title: bool = False, indent: int = 0) -> None:
         """Print a info string."""
         self._print("\033[97;1m" + text + "\033[0m" if title else text, indent=indent)
@@ -138,26 +156,74 @@ class Lets(LetsCore):
         """Print an error string."""
         self._print("\033[38;5;203m" + text + "\033[0m")
 
+    def table(self, columns: List[str] | Dict[str, str], rows: List[List[str]] | List[Dict[str, str]]) -> None:
+        """Print a table.
+
+        Args:
+            columns: The columns of the table. This can be either a list of column names or a dictionary mapping key names to their display names.
+            rows: The rows of the table. Each row is a list of cell values or a dictionary mapping column names to cell values.
+        """
+        # Normalize the inputs
+        if isinstance(columns, list):
+            columns = {c: c for c in columns}
+        if isinstance(rows, list) and len(rows) > 0 and isinstance(rows[0], list):
+            rows = [dict(zip(columns.keys(), r)) for r in rows]
+
+        # Calculate the width by checking the display width of the column name and all values, and take the maximum.
+        column_widths = {k: max(_display_width(c), *(_display_width(row.get(k, "")) for row in rows)) for k, c in columns.items()}
+
+        # Print the header
+        header = " | ".join(_display_ljust(c, column_widths[k]) for k, c in columns.items())
+        self.info(header, title=True)
+        self.info("-+-".join("-" * column_widths[k] for k in columns.keys()))
+
+        # Print the rows
+        for row in rows:
+            self.info(" | ".join([_display_ljust(row.get(k, ""), column_widths[k]) for k in columns]))
+
     def evaluate(self, condition: bool, message: str, fatal: bool = True) -> None:
-        """Evaluate the condition and print the message as error if the evaluation fails."""
+        """Evaluate the condition
+        
+        If the condition is false, the message is printed as an error. If fatal
+        is true, a LetsExcept is raised with the message. 
+                
+        Args:
+            condition: The condition to evaluate
+            message: The message to print if the condition is false
+            fatal: Whether to raise a LetsExcept if the condition is false
+        """
         if not condition:
             if fatal:
                 raise LetsExcept(message)
             else:
                 self.error(message)
 
-    ####################################################
-    ###### Functions to manage persistent settings######
-    ####################################################
+    #####################################################
+    ###### Functions to manage persistent settings ######
+    #####################################################
     def get_setting(self, setting: str) -> Any:
-        """Retrieve the setting value."""
+        """Retrieve the setting value.
+
+        Args:
+            setting: The name of the setting to retrieve
+
+        Returns:
+            The value of the setting, or None if the setting does not exist
+        """
         namespace = _get_namespace()
         settings = self._registered_settings.get(namespace, {})
         the_setting = settings.get(setting, None)
         return the_setting["value"] if the_setting else None
 
     def set_setting(self, setting_name: str, value: Any) -> int:
-        """Set the setting"""
+        """Set the setting
+        
+        Args:
+            setting_name: The name of the setting to set
+            value: The value to set the setting to
+        Returns:
+            -1 if the setting does not exist, otherwise 0
+        """
         namespace = _get_namespace()
         setting = self._resolve_setting(f"{namespace}.{setting_name}", allow_protected=True)
         if not setting:
@@ -168,8 +234,17 @@ class Lets(LetsCore):
 
     def remember(self, setting: str, value: Any, error: Optional[str] = None) -> Any:
         """Remember the given value for the given setting.
-           If value is not a value, the remembered value will be returned.
-           Otherwise the value itself is stored and returned."""
+
+        If value is None, [] or {}, the previously remembered value is
+        returned. Otherwise the given value is stored and returned.
+           
+        Args:
+            setting: The name of the setting to remember the value for
+            value: The value to remember. If this is None, [] or {}, the remembered value will be returned instead.
+            error: The error message to display if no value is given and there is no remembered value. If this is None, a default error message will be displayed.
+        Returns:
+            The remembered value if value is None, [] or {}, otherwise the value itself.
+        """
         namespace = _get_namespace()
         if namespace not in self._registered_settings:
             self._registered_settings[namespace] = {}
@@ -183,11 +258,21 @@ class Lets(LetsCore):
             self._save_settings()
             return value
 
-    ####################################################
-    ######    Functions to manipulate argument    ######
-    ####################################################
+    #####################################################
+    ######    Functions to manipulate argument     ######
+    #####################################################
     def extract(self, items_to_extract: List[str], items: List[str]) -> Dict[str, str]:
-        """Extract the given items from the list of items and return them as a dictionary."""
+        """Extract the given items from the list 
+        
+        The matched items are removed from the original list and returned to the user
+        
+        Args:
+            items_to_extract: The list of items to extract
+            items: The list of items to extract from
+
+        Returns:
+            A dictionary of the extracted items
+        """
         extracted_items = []
         lowercase_items = [a.lower() for a in items]
         for item in items_to_extract:
@@ -201,7 +286,11 @@ class Lets(LetsCore):
     def fuzzy_find(self, text: str | List[str], options: List[str], unique=False, starts=False, case_sensitive=False, require_match=False, no_match_error=None) -> Optional[List[str]]:
         """ Searches for matching string(s) in the options.
 
-        Find all strings in options that start with or contain the given text
+        Find all strings in options that start with or contain the given text.
+        If one or more exact matches exist for a search term, only those exact
+        matches are returned and partial matches are ignored. This makes it
+        possible to select a single intended option even when other options
+        contain the same text as a substring.
         When a list is provided, the results for all texts are combined and returned.
 
         Args:
@@ -221,16 +310,30 @@ class Lets(LetsCore):
         results = []
         for t in text:
             no_match_error = no_match_error or "No match found"
-            regex = re.compile(("^" if starts else "") + re.escape(t), 0 if case_sensitive else re.IGNORECASE)
-            subresults = [s for s in options if regex.search(s)]
+            exact_matches = [
+                s for s in options if (s == t if case_sensitive else s.lower() == t.lower())
+            ]
+            if exact_matches:
+                subresults = exact_matches
+            else:
+                regex = re.compile(("^" if starts else "") + re.escape(t), 0 if case_sensitive else re.IGNORECASE)
+                subresults = [s for s in options if regex.search(s)]
             if require_match and (not subresults or (unique and len(subresults) != 1)):
                 raise LetsExcept(f"{no_match_error}: '{t}'")
             results.extend(subresults)
         return results
 
-    ####################################################
-    ######    Functions to execute commands       ######
-    ####################################################
+    #####################################################
+    ######     Functions to execute commands       ######
+    #####################################################
+    def set_default_env(self, env: ExecutionEnvironment) -> None:
+        """ Set the default execution environment for this Lets instance.
+
+        Args:
+            env: The execution environment to set as default
+        """
+        self._default_env = env
+
     def execute(self, command: str, show_output: bool=True, env: Optional[ExecutionEnvironment] = None) -> tuple[int, str]:
         """ Execute the given command
 
@@ -239,6 +342,10 @@ class Lets(LetsCore):
         Args:
           command: The command to execute
           show_output: When true, the output of the command is printed to the terminal
+          env: The execution environment to execute the command in. If None,
+               the default execution environment is used. If the default execution
+               environment is also None, the command is executed in the current
+               environment.
 
         Returns:
           process return code
@@ -246,13 +353,20 @@ class Lets(LetsCore):
         """
         master_fd, slave_fd = pty.openpty()
 
+        if env is None:
+            env = self._default_env
+
         if env is not None:
             command = env._prepare_command(command)
 
         self.verbose(f"Executing command: {command}")
 
-        stdin_fd = sys.stdin.fileno()
-        stdin_is_tty = sys.stdin.isatty()
+        try:
+            stdin_fd = sys.stdin.fileno()
+            stdin_is_tty = sys.stdin.isatty()
+        except (AttributeError, UnsupportedOperation):
+            stdin_fd = None
+            stdin_is_tty = False
         original_tty_state = None
         if stdin_is_tty:
                 original_tty_state = termios.tcgetattr(stdin_fd)
@@ -265,14 +379,15 @@ class Lets(LetsCore):
             stdout=slave_fd,
             stderr=slave_fd,
             close_fds=True,
-            text=False
+            text=False,
+            preexec_fn=os.setsid
         )
 
         os.close(slave_fd)
 
         captured = bytearray()
 
-        forward_stdin = True
+        forward_stdin = stdin_fd is not None
         master_open = True
 
         try:
@@ -310,10 +425,22 @@ class Lets(LetsCore):
                     if not data:
                         forward_stdin = False
                     else:
-                        os.write(master_fd, data)
+                        if b"\x03" in data:
+                            try:
+                                os.killpg(process.pid, signal.SIGINT)
+                            except ProcessLookupError:
+                                pass
+                            data = data.replace(b"\x03", b"")
+                        if data:
+                            os.write(master_fd, data)
 
                 if process.poll() is not None and not master_open:
                     break
+        except KeyboardInterrupt:
+            try:
+                os.killpg(process.pid, signal.SIGINT)
+            except ProcessLookupError:
+                pass
         finally:
             if stdin_is_tty and original_tty_state is not None:
                 termios.tcsetattr(stdin_fd, termios.TCSADRAIN, original_tty_state)
@@ -321,4 +448,3 @@ class Lets(LetsCore):
 
         process.wait()
         return process.returncode, captured.decode(errors="replace")
-

@@ -15,6 +15,12 @@
 # specific language governing permissions and limitations
 # under the License.
 
+""" This plugin demonstrates how to create a plugin for Lets. It defines a few
+verbs to build, flash and monitor applications on different boards. It also
+shows how to use the fuzzy finding and remembering features of Lets to make the
+user experience more natural and intuitive. 
+"""
+
 from lets import LetsExcept, verb
 from pathlib import Path
 from typing import List
@@ -67,6 +73,7 @@ def build(lets: "Lets", _verb: str, args: List[str]) -> int:
         is given, it will build the last used apps.
 
         Options:
+        - [apps]: One or more (fuzzy) names of apps to build. Apps are remembered.
         - clean: If specified, it will clean the build directory before building.
 
         Examples:
@@ -92,6 +99,8 @@ def flash(lets: "Lets", _verb: str, args: List[str]) -> int:
         application and board.
 
         Options:
+        - [apps]: One or more (fuzzy) names of apps to build. Apps are remembered.
+        - [board]: The name of the board to flash the app on. Boards are remembered.
         - erase: If specified, it will erase the board before flashing.
 
         Examples:
@@ -115,6 +124,9 @@ def monitor(lets: "Lets", _verb: str, args: List[str]) -> int:
         The user can specify a board name as argument. If no board name is given,
         it will use the last used board. All output from the board will be shown in the terminal.
         The user can exit by pressing Ctrl+C.
+
+        Options:
+        - [board]: The name of the board to flash the app on. Boards are remembered.
 
         Examples:
         - lets monitor board1: Shows the monitor output for board1

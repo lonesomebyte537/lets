@@ -16,8 +16,8 @@
 # under the License.
 
 """\
-Lets is a command‑line interpreter designed to make task execution more natural and intuitive.\
-Instead of memorizing complex commands, users interact with Lets by typing simple, verb‑based instructions written in plain language.\
+Lets is a command‑line interpreter designed to make task execution more natural and intuitive. \
+Instead of memorizing complex commands, users interact with Lets by typing simple, verb‑based instructions written in plain language. \
 In addition, Lets offers a framework that makes it straightforward for developers to create plugins and extend functionality.
 """
 
@@ -27,6 +27,7 @@ import pathlib
 import shutil
 import sys
 import textwrap
+import unicodedata
 import yaml
 from typing import Any, Callable, Dict, List, Optional, Set, TypedDict, Union
 
@@ -36,6 +37,16 @@ class LetsExcept(Exception):
 
 class Password:
     """Type used for settings containing passwords."""
+
+
+def _display_width(s: str) -> int:
+    """Return the display width of a string, accounting for wide Unicode characters."""
+    return sum(2 if unicodedata.east_asian_width(c) in ('W', 'F') else 1 for c in s)
+
+
+def _display_ljust(s: str, width: int) -> str:
+    """Left-justify a string to the given display width."""
+    return s + ' ' * (width - _display_width(s))
 
 
 LETS_NAMESPACE = "lets"
@@ -90,11 +101,11 @@ class LetsCore:
 
     def _load_plugins(self) -> None:
         # Load folders from settings file. Other settings are loaded after all plugins are discovered
-        config_files = [pathlib.Path.home() / ".letsrc"]
-        # Recurse upwards to find .letsrc files until the filesystem root is reached
+        config_files = [pathlib.Path.home() / ".lets"]
+        # Recurse upwards to find .lets files until the filesystem root is reached
         current = pathlib.Path.cwd()
         while True:
-            candidate = current / ".letsrc"
+            candidate = current / ".lets"
             if candidate.is_file():
                 config_files.append(candidate)
             if current.parent == current:
@@ -115,8 +126,11 @@ class LetsCore:
             spec = importlib.util.spec_from_file_location(file.stem, str(file))
             if spec and spec.loader:
                 mod = importlib.util.module_from_spec(spec)
+                # Register the dynamic plugin module so functions can resolve back to it via __module__.
+                sys.modules[spec.name] = mod
                 spec.loader.exec_module(mod)
-                mod.init(self)
+                if hasattr(mod, "init"):
+                    mod.init(self)
                 # Get value of LETS_NAMESPACE
                 if hasattr(mod, "LETS_NAMESPACE"):
                     namespace = getattr(mod, "LETS_NAMESPACE")
@@ -128,7 +142,7 @@ class LetsCore:
 
     def _load_settings(self) -> None:
         # Check whether rc file exists
-        file = pathlib.Path.home() / ".letsrc"
+        file = pathlib.Path.home() / ".lets"
         if file.exists():
             # Yes, load the settings
             with open(file, "r", encoding="utf-8") as f:
@@ -158,18 +172,20 @@ class LetsCore:
             f"{c}.{s}" for c in file_settings for s in file_settings[c] if c in self._registered_settings and s not in self._registered_settings[c] and s!="_remember"
         }
         if unknown_settings:
-            raise AttributeError(f"Unknown settings found in .letsrc: {' ,'.join(unknown_settings)}")
+            self.warning(f"Unknown settings found in .lets: {' ,'.join(unknown_settings)}")
 
         # Update the values
         for c in file_settings:
             if c not in self._registered_settings:
                 continue
             for s in file_settings[c]:
+                if s not in self._registered_settings[c]:
+                    continue
                 self._registered_settings[c][s]["value"] = set(file_settings[c][s]) if \
                     self._registered_settings[c][s]["type"] == set else file_settings[c][s]
 
     def _save_settings(self) -> None:
-        file = pathlib.Path.home() / ".letsrc"
+        file = pathlib.Path.home() / ".lets"
         if file.exists():
             # Yes, load the settings
             with open(file, "r", encoding="utf-8") as f:
@@ -401,43 +417,61 @@ class LetsCore:
                 examples = [" ".join(examples[starts[idx] : starts[idx + 1]]) for idx in range(len(starts) - 1)]
             return {"summary": summary, "description": description, "options": options, "examples": examples}
 
+        def namespace_help(namespace: str, title: str) -> None:
+            self.info(title, title=True, indent=2)
+            # Get the description of the plugin from the docstring of the module the first verb is defined in
+            plugin_verbs = [c for c in self._verbs if c["namespace"] == namespace]
+            if plugin_verbs and plugin_verbs[0]["process_func"].__module__:
+                mod = sys.modules.get(plugin_verbs[0]["process_func"].__module__)
+                if mod is None:
+                    mod = inspect.getmodule(plugin_verbs[0]["process_func"])
+                if mod and mod.__doc__:
+                    self.info("  " + "".join(["\n" if l.lstrip() == "" else l + " " for l in mod.__doc__.splitlines()]), indent=2)
+                    self.info("")
+            self.info("  VERBS:", title=True, indent=2)
+            namespace_verbs = [c for c in self._verbs if c["namespace"] == namespace]
+            max_verb_length = max(len(c["namespace"] + c["verb"]) for c in namespace_verbs) + 1
+            for verb in namespace_verbs:
+                self.info(
+                    f"    {verb['namespace']+'.'+verb['verb']: >{max_verb_length}}: "
+                    f"{dissect_doc(verb['process_func'])['summary']}",
+                        indent=max_verb_length + 6,
+                    )
+            self.info("")
+            self.info("  SETTINGS:", title=True)
+            namespace_settings = self._registered_settings[namespace] if namespace in self._registered_settings else {}
+            max_setting_length = max(
+                len(namespace + name) + 1 for name, setting_info in namespace_settings.items()
+            )
+            for name, setting_info in namespace_settings.items():
+                # Skip protected settings
+                if name.startswith("_"):
+                    continue
+                self.info(
+                    f"  {namespace + '.' + name: >{max_setting_length}}: {setting_info['description']}",
+                    indent=max_setting_length + 4,
+                )
+
         if not args:
             self.info("Usage: Lets [VERB] [OPTIONS]")
             self.info("")
-            self.info("DESCRIPTION", title=True)
-            self.info(sys.modules[__name__].__doc__)
+            namespace_help("lets", "DESCRIPTION")
+            namespaces = list(set(c["namespace"] for c in self._verbs if c["namespace"] != "lets"))
+            if namespaces:
+                self.info("")
+                self.info("AVAILABLE PLUGINS:", title=True)
+
+            for namespace in namespaces:
+                namespace_help(namespace, namespace.upper())
             self.info("")
-            self.info("AVAILABLE VERBS:", title=True)
-            max_verb_length = max(len(c["namespace"] + c["verb"]) for c in self._verbs) + 1
-            for cmd in self._verbs:
-                self.info(
-                    f"  {cmd['namespace']+'.'+cmd['verb']: >{max_verb_length}}: "
-                    f"{dissect_doc(cmd['process_func'])['summary']}",
-                    indent=max_verb_length + 4,
-                )
-            self.info("")
-            self.info("Use 'lets help [VERB]' for more information about the verb")
-            self.info("")
-            self.info("AVAILABLE SETTINGS:", title=True)
-            max_setting_length = max(
-                len(namespace + name) + 1 for namespace, settings in self._registered_settings.items() for name in settings
-            )
-            for namespace, settings in self._registered_settings.items():
-                for name, setting_info in settings.items():
-                    # Skip protected settings
-                    if name.startswith("_"):
-                        continue
-                    self.info(
-                        f"  {namespace + '.' + name: >{max_setting_length}}: {setting_info['description']}",
-                        indent=max_setting_length + 4,
-                    )
-            self.info("")
-            self.info("Use 'lets help [SETTING]' for more information about the setting")
+            self.info("Use 'lets help [VERB]' for more information about a verb")
+            self.info("Use 'lets help [SETTING]' for more information about a setting")
         else:
             for arg in args:
                 verbs = self._resolve_verbs(arg)
                 setting = self._resolve_setting(arg, True)
-                if not verbs and not setting:
+                namespaces = list(set(c["namespace"] for c in self._verbs if c["namespace"].lower() == arg.lower()))
+                if not verbs and not setting and not namespaces:
                     self.info(f"Unknown option: {arg}")
                     return -1
                 if len(verbs) > 1:
@@ -492,6 +526,8 @@ class LetsCore:
                             f"  lets set {arg} [{'|'.join(setting['options']) if setting['options'] else 'value'}]"
                         )
                     self.info(f"  lets get {arg}")
+                if namespaces:
+                    namespace_help(namespaces[0], "DESCRIPTION")
         return 0
 
     def _resolve_verbs(self, arg: str) -> List[VerbType]:

@@ -23,7 +23,7 @@ Isolation strategy
   construction reads and appends to.  It is cleared in setUp/tearDown so
   tests cannot interfere with each other.
 * ``pathlib.Path.home`` and ``pathlib.Path.cwd`` are patched to an empty
-  temp directory, so no real ``~/.letsrc`` or project ``.letsrc`` files are
+  temp directory, so no real ``~/.lets`` or project ``.lets`` files are
   ever loaded.
 * ``LetsCore._save_settings`` is patched to a no-op, so no test writes to
   disk; in-memory state changes are still exercised normally.
@@ -41,7 +41,7 @@ import unittest
 from unittest.mock import patch
 
 import lets.core as core_module
-from lets.api import Lets
+from lets.api import ExecutionEnvironment, Lets
 from lets.core import LetsExcept
 
 # Required so that _get_namespace() resolves to "test" when Lets methods are
@@ -62,7 +62,7 @@ class LetsTestCase(unittest.TestCase):
         core_module._registered_verbs.clear()
 
         # Use an empty temp directory as both home and cwd so no real
-        # .letsrc files are discovered during initialisation.
+        # .lets files are discovered during initialisation.
         self._tmp = tempfile.TemporaryDirectory()
         self._tmp_path = pathlib.Path(self._tmp.name)
 
@@ -159,6 +159,15 @@ class TestExtract(LetsTestCase):
 # ---------------------------------------------------------------------------
 
 class TestFuzzyFind(LetsTestCase):
+
+    def test_fuzzy_find_exact_match_preferred_over_partial_matches(self):
+        options = ["wash", "washing", "carwash"]
+
+        result = self.lets.fuzzy_find("was", options)
+        self.assertCountEqual(result, ["wash", "washing", "carwash"])
+
+        result = self.lets.fuzzy_find("wash", options)
+        self.assertEqual(result, ["wash"])
 
     def test_fuzzy_find_substring_match(self):
         result = self.lets.fuzzy_find("hel", ["hello_world", "hello_beautiful", "bye"])
@@ -399,6 +408,76 @@ class TestOutput(LetsTestCase):
             self.lets.verbose("debug message")
         output = " ".join(str(a) for call in mock_print.call_args_list for a in call[0])
         self.assertIn("debug message", output)
+
+
+# ---------------------------------------------------------------------------
+# execute() / set_default_env()
+# ---------------------------------------------------------------------------
+
+class _DummyEnv(ExecutionEnvironment):
+    """Execution environment used to verify command rewriting and usage."""
+
+    def __init__(self, marker: str):
+        self.marker = marker
+        self.seen_commands = []
+
+    def _prepare_command(self, command: str) -> str:
+        self.seen_commands.append(command)
+        return f"printf '{self.marker}\\n' && {command}"
+
+
+class TestExecute(LetsTestCase):
+
+    def test_execute_uses_explicit_env(self):
+        env = _DummyEnv("EXPLICIT_ENV")
+
+        return_code, output = self.lets.execute("printf 'payload'", show_output=False, env=env)
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(env.seen_commands, ["printf 'payload'"])
+        self.assertIn("EXPLICIT_ENV", output)
+        self.assertIn("payload", output)
+
+    def test_execute_uses_default_env_set_by_set_default_env(self):
+        env = _DummyEnv("DEFAULT_ENV")
+        self.lets.set_default_env(env)
+
+        return_code, output = self.lets.execute("printf 'payload'", show_output=False)
+
+        self.assertEqual(return_code, 0)
+        self.assertEqual(env.seen_commands, ["printf 'payload'"])
+        self.assertIn("DEFAULT_ENV", output)
+        self.assertIn("payload", output)
+
+
+# ---------------------------------------------------------------------------
+# table()
+# ---------------------------------------------------------------------------
+
+class TestTable(LetsTestCase):
+
+    def test_table_supports_all_list_dict_combinations(self):
+        columns_variants = [
+            ["name", "score"],
+            {"name": "Name", "score": "Score"},
+        ]
+        rows_variants = [
+            [["Alice", "10"], ["Bob", "20"]],
+            [{"name": "Alice", "score": "10"}, {"name": "Bob", "score": "20"}],
+        ]
+
+        for columns in columns_variants:
+            for rows in rows_variants:
+                with self.subTest(columns_type=type(columns).__name__, rows_type=type(rows[0]).__name__):
+                    with patch.object(self.lets, "info") as mock_info:
+                        self.lets.table(columns, rows)
+
+                    calls = [call.args[0] for call in mock_info.call_args_list]
+                    expected_header = "name  | score" if isinstance(columns, list) else "Name  | Score"
+                    self.assertEqual(calls[0], expected_header)
+                    self.assertEqual(calls[1], "------+------")
+                    self.assertEqual(calls[2], "Alice | 10   ")
+                    self.assertEqual(calls[3], "Bob   | 20   ")
 
 
 if __name__ == "__main__":
