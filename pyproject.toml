@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lets"
+version = "0.4"
+description = "Command‑line interpreter to make task execution more natural and intuitive"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = []
+dependencies = ["pyyaml"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Release Tools",
+    "Programming Language :: Python :: 3.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/lonesomebyte537/lets"
+
+[project.scripts]
+lets = "lets:main"
+
+[tool.setuptools.packages.find]
+include = ["lets*"]
+exclude = ["tests", "tests.*"]
+namespaces = false
