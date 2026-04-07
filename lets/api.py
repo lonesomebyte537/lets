@@ -27,6 +27,9 @@ import subprocess
 import sys
 import termios
 import tty
+import fcntl
+import struct
+import shutil
 
 
 def verb(verb_name: Optional[str] = None) -> Callable[[VerbProcessFuncType], VerbProcessFuncType]:
@@ -71,9 +74,10 @@ class DevContainer(ExecutionEnvironment):
             The first element is the source path on the host machine, and the
             second element is the target path inside the devcontainer.
     """
-    def __init__(self, path: str, mount: Tuple[str, str]):
+    def __init__(self, path: str, mount: Tuple[str, str], shell_cmd: str = "bash -l -c"):
         self.path = path
         self.mount = mount
+        self.shell_cmd = shell_cmd
 
     def _prepare_command(self, command: str) -> str:
         """ Prepare the command to be executed inside the devcontainer
@@ -95,7 +99,7 @@ class DevContainer(ExecutionEnvironment):
         # Change working directory inside the container to the same relative path as on the host machine to allow relative paths to work correctly.
         host_cwd = os.getcwd()
         relative_cwd = os.path.relpath(host_cwd, self.mount[0])
-        command = f"sh -c \"cd {os.path.join(self.mount[1], relative_cwd)} && {command.replace('"', '\\"')}\""
+        command = f"{self.shell_cmd} \"cd {os.path.join(self.mount[1], relative_cwd)} && {command.replace('"', '\\"')}\""
         return f"devcontainer exec --workspace-folder {self.path} -- {command}"
 
 
@@ -382,6 +386,39 @@ class Lets(LetsCore):
             text=False,
             preexec_fn=os.setsid
         )
+
+        # Propagate the current terminal window size to the child pty so
+        # interactive programs (gdb TUI, editors) use the full terminal.
+        previous_sigwinch_handler = signal.getsignal(signal.SIGWINCH)
+
+        def _set_winsize() -> None:
+            try:
+                # Prefer to query the real stdin window size when available
+                if stdin_is_tty and stdin_fd is not None:
+                    buf = fcntl.ioctl(stdin_fd, termios.TIOCGWINSZ, b"\x00" * 8)
+                    rows, cols, xp, yp = struct.unpack("hhhh", buf)
+                else:
+                    size = shutil.get_terminal_size(fallback=(80, 24))
+                    cols, rows = size.columns, size.lines
+                    xp = yp = 0
+                winsize = struct.pack("hhhh", rows, cols, xp, yp)
+                try:
+                    fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+                except OSError:
+                    # best-effort, ignore failures
+                    pass
+                # Notify the child pty about the size change
+                try:
+                    os.killpg(process.pid, signal.SIGWINCH)
+                except Exception:
+                    pass
+            except Exception:
+                # swallow any errors; sizing is best-effort
+                pass
+
+        # Set initial size and install a handler to update on terminal resize
+        _set_winsize()
+        signal.signal(signal.SIGWINCH, lambda s, f: _set_winsize())
 
         previous_sigint_handler = signal.getsignal(signal.SIGINT)
 

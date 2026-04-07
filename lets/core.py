@@ -115,7 +115,7 @@ class LetsCore:
 
         plugin_files = []
 
-        for file in config_files:
+        for file in list(set(config_files)):
             if file.exists():
                 with open(file, "r", encoding="utf-8") as f:
                     file_settings = yaml.safe_load(f)
