@@ -35,13 +35,16 @@ import shutil
 def verb(verb_name: Optional[str] = None) -> Callable[[VerbProcessFuncType], VerbProcessFuncType]:
     """Decorate function as a verb handler.
 
-    The name of the verb is inherited from the function name
+    The name of the verb is inherited from the function name if not provided.
+    Multi-word verbs (e.g. ``"show memory"``) are supported; each word consumes
+    one argument position during matching.
     """
     # Get the namespace of the caller to allow plugins to specify the namespace of their verbs.
     namespace = _get_namespace()
 
     def decorator(func: VerbProcessFuncType) -> VerbProcessFuncType:
-        _registered_verbs.append({"name": verb_name or func.__name__, "func": func, "namespace": namespace})
+        name = verb_name.split() if verb_name else func.__name__.split("_")  # verb names are stored as word lists
+        _registered_verbs.append({"name": name, "func": func, "namespace": namespace})
         return func
 
     return decorator

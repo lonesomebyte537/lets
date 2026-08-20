@@ -103,9 +103,12 @@ class LetsTestCase(unittest.TestCase):
     # Helper
     # ------------------------------------------------------------------
 
-    def _make_lets_with_verb(self, name: str, func) -> Lets:
+    def _make_lets_with_verb(self, name: str | list[str], func) -> Lets:
         """Return a fresh Lets() that contains one extra verb under 'test'."""
         core_module._registered_verbs.clear()
+        # Normalize string names to word lists (matching core.py's __init__ behavior)
+        if isinstance(name, str):
+            name = name.split()
         core_module._registered_verbs.append(
             {"name": name, "func": func, "namespace": "test"}
         )
@@ -320,6 +323,69 @@ class TestProcessArguments(LetsTestCase):
         lets = self._make_lets_with_verb("explode", bad_verb)
         result = lets._process_arguments(["explode"])
         self.assertEqual(result, -1)
+
+    def test_multi_word_verb_match(self):
+        """Multi-word verb names consume multiple arguments."""
+        calls = []
+
+        def show_mem(lets_instance, _verb, args):
+            calls.append(args)
+            return 0
+
+        lets = self._make_lets_with_verb("show memory", show_mem)
+        result = lets._process_arguments(["show", "memory", "app1"])
+        self.assertEqual(result, 0)
+        self.assertEqual(calls, [["app1"]])
+
+    def test_longest_match_wins(self):
+        """When both 'show' and 'show memory' exist, 'show' wins for just 'show'."""
+        tracked = {"show_calls": [], "mem_calls": []}
+
+        def show_fn(l, _v, a):
+            tracked["show_calls"].append(a)
+            return 0
+
+        def show_mem_fn(l, _v, a):
+            tracked["mem_calls"].append(a)
+            return 0
+
+        core_module = __import__('lets.core', fromlist=['_registered_verbs'])
+        core_module._registered_verbs.clear()
+        core_module._registered_verbs.append({"name": ["show"], "func": show_fn, "namespace": "test"})
+        core_module._registered_verbs.append({"name": ["show", "memory"], "func": show_mem_fn, "namespace": "test"})
+
+        lets = Lets()
+        lets._registered_settings.setdefault("test", {})["_remember"] = {"description": "", "options": None, "value": {}, "type": dict}
+
+        # Just 'show' should match the single-word verb
+        lets._process_arguments(["show"])
+        self.assertEqual(tracked["show_calls"], [[]])
+        self.assertEqual(tracked["mem_calls"], [])
+
+        tracked["show_calls"].clear()
+        lets2 = Lets()
+        lets2._registered_settings.setdefault("test", {})["_remember"] = {"description": "", "options": None, "value": {}, "type": dict}
+        # 'show memory' should match the two-word verb
+        lets2._process_arguments(["show", "memory"])
+        self.assertEqual(tracked["mem_calls"], [[]])
+
+    def test_multi_word_with_namespace_prefix(self):
+        """Multi-word verbs work with namespace prefix."""
+        calls = []
+
+        def show_cpu(l, _v, a):
+            calls.append(a)
+            return 0
+
+        core_module = __import__('lets.core', fromlist=['_registered_verbs'])
+        core_module._registered_verbs.clear()
+        core_module._registered_verbs.append({"name": ["show", "cpuload"], "func": show_cpu, "namespace": "demo"})
+        lets = Lets()
+        lets._registered_settings.setdefault("demo", {})["_remember"] = {"description": "", "options": None, "value": {}, "type": dict}
+
+        result = lets._process_arguments(["demo.show", "cpuload", "app1"])
+        self.assertEqual(result, 0)
+        self.assertEqual(calls, [["app1"]])
 
 
 # ---------------------------------------------------------------------------

@@ -138,27 +138,18 @@ def monitor(lets: "Lets", _verb: str, args: List[str]) -> int:
     return 0
 
 @verb()
-def show(lets: "Lets", _verb: str, args: List[str]) -> int:
-    """ Show different kind of information.
+def show_apps(lets: "Lets", _verb: str, args: List[str]) -> int:
+    """ Shows the different apps that can be built and flashed. """
+    lets.info("Apps:", title=True)
+    for app in _get_apps():
+        lets.info(f"- {app}")
+    return 0
 
-    Use this verb to show different knd of information
-
-    Options:
-    - apps: Shows the different apps that can be built and flashed.
-    - boards: Shows the registered boards and their corresponding serial ports.
-
-    Examples:
-    - lets show apps: Shows the different apps that can be built and flashed.
-    """
-    if lets.extract(["apps"], args):
-        lets.info("Apps:", title=True)
-        for app in _get_apps():
-            lets.info(f"- {app}")
-    if lets.extract(["boards"], args):
-        boards = lets.get_setting("boards")
-        lets.info("Boards:", title=True)
-        for board, port in boards.items():
-            lets.info(f"- {board}: {port}")
-    if args:
-        lets.warning("Unexpected arguments: " + ", ".join(args))
+@verb()
+def show_boards(lets: "Lets", _verb: str, args: List[str]) -> int:
+    """ Shows the registered boards and their corresponding serial ports. """
+    boards = lets.get_setting("boards")
+    lets.info("Boards:", title=True)
+    for board, port in boards.items():
+        lets.info(f"- {board}: {port}")
     return 0

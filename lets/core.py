@@ -52,8 +52,8 @@ def _display_ljust(s: str, width: int) -> str:
 LETS_NAMESPACE = "lets"
 
 VerbProcessFuncType = Callable[["Lets", str, List[str]], int]
-VerbType = TypedDict("VerbType", {"namespace": str, "verb": str, "process_func": VerbProcessFuncType})
-RegisteredVerbType = TypedDict("RegisteredVerbType", {"name": str, "func": VerbProcessFuncType})
+VerbType = TypedDict("VerbType", {"namespace": str, "verb": List[str], "process_func": VerbProcessFuncType})
+RegisteredVerbType = TypedDict("RegisteredVerbType", {"name": List[str], "func": VerbProcessFuncType})
 SettingType = Dict[str, Any]
 SettingNameSpaceType = Dict[str, SettingType]
 SettingsType = Dict[str, SettingNameSpaceType]
@@ -78,19 +78,21 @@ class LetsCore:
         self._registered_settings: SettingsType = {}
         self._verbs: List[VerbType] = []
         self._load_plugins()
-        _registered_verbs.append({"name": "help", "func": self._help, "namespace": "lets"})
-        _registered_verbs.append({"name": "get", "func": self._get, "namespace": "lets"})
-        _registered_verbs.append({"name": "set", "func": self._set, "namespace": "lets"})
-        _registered_verbs.append({"name": "add", "func": self._add, "namespace": "lets"})
-        _registered_verbs.append({"name": "remove", "func": self._remove, "namespace": "lets"})
-        # Check whether verb already exists
+        _registered_verbs.append({"name": ["help"], "func": self._help, "namespace": "lets"})
+        _registered_verbs.append({"name": ["get"], "func": self._get, "namespace": "lets"})
+        _registered_verbs.append({"name": ["set"], "func": self._set, "namespace": "lets"})
+        _registered_verbs.append({"name": ["add"], "func": self._add, "namespace": "lets"})
+        _registered_verbs.append({"name": ["remove"], "func": self._remove, "namespace": "lets"})
+        # Check whether verb already exists and register new ones
+        seen = {(c["namespace"], tuple(c["verb"])) for c in self._verbs}
         for _verb in _registered_verbs:
-            namespace = _verb["namespace"]
-            name = _verb["name"]
-            existing_verbs = [c for c in self._verbs if c["namespace"] == namespace and c["verb"] == name]
-            if existing_verbs:
-                raise ValueError(f"Verb {namespace}.{name} already exists")
-            self._verbs.append({"namespace": namespace, "verb": name, "process_func": _verb["func"]})
+            name_val = _verb["name"]
+            # Normalize: accept both strings ("show memory") and lists (["show", "memory"])
+            key = (_verb["namespace"], tuple(name_val))
+            if key in seen:
+                continue  # already registered this verb
+            seen.add(key)
+            self._verbs.append({"namespace": _verb["namespace"], "verb": list(name_val), "process_func": _verb["func"]})
 
         self.register_setting("plugins", "List of plugins to load at startup", None, set())
         self.register_setting("verbose", "Sets the default verbose mode", ["on", "off"], "off")
@@ -391,6 +393,10 @@ class LetsCore:
     def _help(self, _: "Lets", __: str, args: List[str]) -> int:
         """Print this help."""
 
+        def _vstr(verb: VerbType) -> str:
+            """Format a verb as 'namespace.verb_name' string."""
+            return f"{verb['namespace']}.{' '.join(verb['verb'])}"
+
         def dissect_doc(func: VerbProcessFuncType) -> Dict[str, Any]:
             summary = ""
             description = ""
@@ -430,10 +436,10 @@ class LetsCore:
                     self.info("")
             self.info("  VERBS:", title=True, indent=2)
             namespace_verbs = [c for c in self._verbs if c["namespace"] == namespace]
-            max_verb_length = max(len(c["namespace"] + c["verb"]) for c in namespace_verbs) + 1
+            max_verb_length = max(len(c["namespace"] + ' '.join(c["verb"])) for c in namespace_verbs) + 1
             for verb in namespace_verbs:
                 self.info(
-                    f"    {verb['namespace']+'.'+verb['verb']: >{max_verb_length}}: "
+                    f"    {verb['namespace']+'.'+' '.join(verb['verb']): >{max_verb_length}}: "
                     f"{dissect_doc(verb['process_func'])['summary']}",
                         indent=max_verb_length + 6,
                     )
@@ -467,107 +473,144 @@ class LetsCore:
             self.info("Use 'lets help [VERB]' for more information about a verb")
             self.info("Use 'lets help [SETTING]' for more information about a setting")
         else:
-            for arg in args:
-                verbs = self._resolve_verbs(arg)
-                setting = self._resolve_setting(arg, True)
-                namespaces = list(set(c["namespace"] for c in self._verbs if c["namespace"].lower() == arg.lower()))
-                if not verbs and not setting and not namespaces:
-                    self.info(f"Unknown option: {arg}")
-                    return -1
-                if len(verbs) > 1:
-                    self.warning(
-                        "Ambiguous verb found. Use one of following verbs: "
-                        + (", ".join([f"{c['namespace']}.{c['verb']}" for c in verbs]))
-                    )
-                    return -1
-                if verbs:
-                    cmd = verbs[0]
-                    self.info(f"Usage: lets {cmd['namespace']}.{cmd['verb']} [OPTIONS]")
-                    doc = dissect_doc(cmd["process_func"])
+            # Use _find_match for proper multi-word verb resolution.
+            match = self._find_match(args)
+            if match:
+                cmd = match[0]
+                candidate = f"{cmd['namespace']}.{' '.join(cmd['verb'])}"
+            else:
+                candidate = " ".join(args)
+            verbs = []
+            if match:
+                verbs = [match[0]]
+            setting = self._resolve_setting(candidate, True)
+            namespaces = list(set(c["namespace"] for c in self._verbs if c["namespace"].lower() == args[0].lower()))
+            if not verbs and not setting and not namespaces:
+                self.info(f"Unknown option: {candidate}")
+                return -1
+            if len(verbs) > 1:
+                self.warning(
+                    "Ambiguous verb found. Use one of following verbs: "
+                    + (", ".join([f"{c['namespace']}.{_vstr(c)}" for c in verbs]))
+                )
+                return -1
+            if verbs:
+                cmd = verbs[0]
+                self.info(f"Usage: lets {candidate} [OPTIONS]")
+                doc = dissect_doc(cmd["process_func"])
+                self.info("")
+                self.info("SUMMARY", title=True)
+                self.info(f"  {doc['summary']}", indent=2)
+                if doc["description"]:
                     self.info("")
-                    self.info("SUMMARY", title=True)
-                    self.info(f"  {doc['summary']}", indent=2)
-                    if doc["description"]:
-                        self.info("")
-                        self.info("DESCRIPTION", title=True)
-                        self.info("  " + doc["description"], indent=2)
-                    if doc["options"]:
-                        self.info("")
-                        self.info("OPTIONS", title=True)
-                        for option in doc["options"]:
-                            self.info("  " + option, indent=len(option.split(":")[0]) + 4)
-                    if doc["examples"]:
-                        self.info("")
-                        self.info("EXAMPLES", title=True)
-                        for example in doc["examples"]:
-                            self.info("  " + example, indent=len(example.split(":")[0]) + 4)
-                if setting:
                     self.info("DESCRIPTION", title=True)
-                    self.info("  " + setting["description"], indent=2)
-                    setting_type = (
-                        "Dictionary" if setting["type"] == dict else "List" if setting["type"] == list else "String"
-                    )
-                    self.info(f"  Type: {setting_type}")
-                    self.info(f"  Current value: {setting['value']}", indent=2)
-                    if setting["options"]:
-                        self.info(f"  Valid options: {', '.join(setting['options'])}")
+                    self.info("  " + doc["description"], indent=2)
+                if doc["options"]:
                     self.info("")
-                    self.info("USAGE", title=True)
-                    if setting["type"] == dict:
-                        self.info(f"  lets set {arg} [key1:value1] [key2:value2] ...")
-                        self.info(f"  lets add {arg} [key1:value1] [key2:value2] ...")
-                        self.info(f"  lets remove {arg} [key1] [key2] ...")
-                    elif setting["type"] == list:
-                        self.info(f"  lets set {arg} [value1] [value2] ...")
-                        self.info(f"  lets add {arg} [value1] [value2] ...")
-                        self.info(f"  lets remove {arg} [value1] [value2] ...")
-                    else:
-                        self.info(
-                            f"  lets set {arg} [{'|'.join(setting['options']) if setting['options'] else 'value'}]"
-                        )
-                    self.info(f"  lets get {arg}")
-                if namespaces:
-                    namespace_help(namespaces[0], "DESCRIPTION")
+                    self.info("OPTIONS", title=True)
+                    for option in doc["options"]:
+                        self.info("  " + option, indent=len(option.split(":")[0]) + 4)
+                if doc["examples"]:
+                    self.info("")
+                    self.info("EXAMPLES", title=True)
+                    for example in doc["examples"]:
+                        self.info("  " + example, indent=len(example.split(":")[0]) + 4)
+            if setting:
+                self.info("DESCRIPTION", title=True)
+                self.info("  " + setting["description"], indent=2)
+                setting_type = (
+                    "Dictionary" if setting["type"] == dict else "List" if setting["type"] == list else "String"
+                )
+                self.info(f"  Type: {setting_type}")
+                self.info(f"  Current value: {setting['value']}", indent=2)
+                if setting["options"]:
+                    self.info(f"  Valid options: {', '.join(setting['options'])}")
+                self.info("")
+                self.info("USAGE", title=True)
+                if setting["type"] == dict:
+                    self.info(f"  lets set {candidate} [key1:value1] [key2:value2] ...")
+                    self.info(f"  lets add {candidate} [key1:value1] [key2:value2] ...")
+                    self.info(f"  lets remove {candidate} [key1] [key2] ...")
+                elif setting["type"] == list:
+                    self.info(f"  lets set {candidate} [value1] [value2] ...")
+                    self.info(f"  lets add {candidate} [value1] [value2] ...")
+                    self.info(f"  lets remove {candidate} [value1] [value2] ...")
+                else:
+                    self.info(
+                        f"  lets set {candidate} [{'|'.join(setting['options']) if setting['options'] else 'value'}]"
+                    )
+                self.info(f"  lets get {candidate}")
+            if namespaces:
+                namespace_help(namespaces[0], "DESCRIPTION")
         return 0
 
     def _resolve_verbs(self, arg: str) -> List[VerbType]:
         namespace_verb = arg if "." in arg else "." + arg
         namespace, _verb = namespace_verb.split(".", 1)
 
-        return [c for c in self._verbs if c["verb"] == _verb and namespace in ["", c["namespace"]]]
+        results = []
+        for c in self._verbs:
+            verb_str = ' '.join(c['verb'])
+            if verb_str == _verb or verb_str.startswith(_verb + ' ') or (not _verb):
+                if namespace in ["", c["namespace"]]:
+                    results.append(c)
+        return results
+
+    def _find_match(self, args: List[str]) -> Optional[tuple]:
+        """Find a verb match from the argument list using longest-match-first.
+
+        Returns (verb_type, remaining_args) or None.
+        The first word can optionally be preceded by a namespace+dot (e.g. "demo.show").
+        """
+        # Parse optional namespace prefix from args[0]
+        ns = None
+        if '.' in args[0] and args[0].split('.', 1)[0] in self._registered_settings:
+            ns = args[0].split('.', 1)[0]
+
+        for verb_type in sorted(self._verbs, key=lambda v: len(v['verb']), reverse=True):
+            vwords_list = verb_type['verb']  # always a list now
+
+            # Namespace filter (only when explicit ns was given)
+            if ns is not None and verb_type['namespace'] != ns:
+                continue
+
+            # Determine candidate words for matching
+            candidates = args[0].split('.', 1)[-1:] + args[1:]
+
+            # Verb must exactly match the first len(vwords_list) candidate words
+            if vwords_list != candidates[:len(vwords_list)]:
+                continue
+
+            return (verb_type, args[len(vwords_list):])
+
+        return None
 
     def _process_arguments(self, args: List[str]) -> int:
         """Process the arguments and executes the correct verb."""
         if not args:
             self._help(self, "help", [])
             return -1
-        # Search matching verbs
-        verbs = self._resolve_verbs(args[0])
-        if len(verbs) > 1:
-            self.warning(
-                "Ambiguous verb found. Use one of following verbs: "
-                + (", ".join([f"{c['namespace']}.{c['verb']}" for c in verbs]))
-            )
-            return -1
-        if not verbs:
+        # Find matching verb using longest-match-first for multi-word verbs
+        match = self._find_match(args)
+        if not match:
             self.error(f"Unknown verb {args[0]}")
             return -1
-        _verb = verbs[0]
+        _verb, args = match
 
         # Check for lets settings
-        if _verb["namespace"] != "lets" and _verb["verb"] not in ["get", "set"]:
+        if _verb["namespace"] != "lets" and _verb["verb"][0] not in ["get", "set"]:
             if "verbose" in args or "lets.verbose" in args:
                 self._one_time_verbose = True
                 while "verbose" in args:
                     del args[args.index("verbose")]
 
         # Check whether the user is asking for help
-        if "help" in args[1:]:
-            self._help(self, "help", [_verb["namespace"] + "." + _verb["verb"]])
+        if "help" in args:
+            self._help(self, "help", ['.'.join([_verb["namespace"]] + _verb["verb"])])
             return 0
 
         try:
-            result = _verb["process_func"](self, args[0], args[1:])
+            result = _verb["process_func"](self, None, args)
         except LetsExcept as e:
             self.error(str(e))
             return -1
