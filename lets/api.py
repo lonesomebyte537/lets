@@ -15,9 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 
-from .core import LetsCore, LetsExcept, Password, VerbProcessFuncType, _get_namespace, _registered_verbs, _display_width, _display_ljust
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from .core import LetsCore, LetsExcept, Password, VerbProcessFuncType, ArgMatcherFuncType, _get_namespace, _registered_verbs, _display_width, _display_ljust
+from functools import wraps
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from io import UnsupportedOperation
+import inspect
 import os
 import signal
 import pty
@@ -31,6 +33,8 @@ import fcntl
 import struct
 import shutil
 
+ArgMatcher = Union[str, ArgMatcherFuncType]
+
 
 def verb(verb_name: Optional[str] = None) -> Callable[[VerbProcessFuncType], VerbProcessFuncType]:
     """Decorate function as a verb handler.
@@ -38,17 +42,62 @@ def verb(verb_name: Optional[str] = None) -> Callable[[VerbProcessFuncType], Ver
     The name of the verb is inherited from the function name if not provided.
     Multi-word verbs (e.g. ``"show memory"``) are supported; each word consumes
     one argument position during matching.
+
+    If this decorator is combined with args decorator, this must appear as the first one.
     """
     # Get the namespace of the caller to allow plugins to specify the namespace of their verbs.
     namespace = _get_namespace()
 
     def decorator(func: VerbProcessFuncType) -> VerbProcessFuncType:
-        name = verb_name.split() if verb_name else func.__name__.split("_")  # verb names are stored as word lists
+        name = verb_name.split() if verb_name else inspect.unwrap(func).__name__.split("_")  # verb names are stored as word lists
         _registered_verbs.append({"name": name, "func": func, "namespace": namespace})
         return func
 
     return decorator
 
+def args(*arg_matchers: ArgMatcher, exact: Optional[bool] = False, remember: Optional[List[str]] = None):
+    """Decorator to extract arguments that match the regex.
+
+    The decorator will go over all arguments given at the command line and checks
+    if they match the regex provided in the dictionary. If so, the arguments is removed
+    from the generic args and returned in a dictionary with the key being the argument name
+
+    Args:
+        arg_matchers: A list of regex patterns or callables that will be used to match the arguments
+        exact: Exact one match in the arguments is expected, otherwise an error is thrown
+        remember: Remember the argument value. A list of names is used to store the argument value
+    """
+    def decorator(func: VerbProcessFuncType):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            lets = args[0]
+            all_args = args[-1]
+
+            if remember is not None and len(arg_matchers) != len(remember):
+                raise LetsExcept("For each argument a name is expected")
+
+            extracted_args = []
+            remaining_args = all_args.copy()
+
+            for idx, matcher in enumerate(arg_matchers):
+                if callable(matcher):
+                    matches, remaining_args = matcher(lets, remaining_args)
+                else:
+                    matches = [s for s in remaining_args if re.fullmatch(matcher, s)]
+                    for match in matches:
+                        remaining_args.remove(match)
+                if remember:
+                    namespace = inspect.unwrap(func).__globals__.get("LETS_NAMESPACE")
+                    matches = lets._remember_setting(remember[idx], matches, namespace)
+                if exact:
+                    if len(matches) != 1:
+                        raise LetsExcept(f"Expected exactly one match, found {'none' if not matches else f'{', '.join(matches)}'}")
+                    matches = matches[0]
+                extracted_args.append(matches)  # Append the list of matches
+
+            return func(*args[:-1], *extracted_args, remaining_args, **kwargs)
+        return wrapper
+    return decorator
 
 class ExecutionEnvironment:
     """ Class to represent execution environment """
@@ -253,17 +302,7 @@ class Lets(LetsCore):
             The remembered value if value is None, [] or {}, otherwise the value itself.
         """
         namespace = _get_namespace()
-        if namespace not in self._registered_settings:
-            self._registered_settings[namespace] = {}
-        if value is None or value == [] or value == {}:
-            s = self._registered_settings[namespace]["_remember"]["value"].get(setting)
-            if s is None and error:
-                raise LetsExcept(error)
-            return s if s else value
-        else:
-            self._registered_settings[namespace]["_remember"]["value"][setting] = value;
-            self._save_settings()
-            return value
+        return self._remember_setting(setting, value, namespace, error) 
 
     #####################################################
     ######    Functions to manipulate argument     ######

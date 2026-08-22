@@ -29,7 +29,7 @@ import sys
 import textwrap
 import unicodedata
 import yaml
-from typing import Any, Callable, Dict, List, Optional, Set, TypedDict, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypedDict, Union
 
 class LetsExcept(Exception):
     """ General exception that cause the execution to stop immediately """
@@ -52,6 +52,8 @@ def _display_ljust(s: str, width: int) -> str:
 LETS_NAMESPACE = "lets"
 
 VerbProcessFuncType = Callable[["Lets", str, List[str]], int]
+ArgMatcherFuncType = Callable[["Lets", List[str]], Tuple[Any, List[str]]]
+
 VerbType = TypedDict("VerbType", {"namespace": str, "verb": List[str], "process_func": VerbProcessFuncType})
 RegisteredVerbType = TypedDict("RegisteredVerbType", {"name": List[str], "func": VerbProcessFuncType})
 SettingType = Dict[str, Any]
@@ -253,6 +255,30 @@ class LetsCore:
         setting = self._registered_settings[c][s]
         return setting
 
+    def _remember_setting(self, setting: str, value: Any, namespace: str, error: Optional[str] = None) -> Any:
+        """Remember the given value for the given setting.
+
+        If value is None, [] or {}, the previously remembered value is
+        returned. Otherwise the given value is stored and returned.
+           
+        Args:
+            setting: The name of the setting to remember the value for
+            value: The value to remember. If this is None, [] or {}, the remembered value will be returned instead.
+            error: The error message to display if no value is given and there is no remembered value. If this is None, a default error message will be displayed.
+        Returns:
+            The remembered value if value is None, [] or {}, otherwise the value itself.
+        """
+        if namespace not in self._registered_settings:
+            self._registered_settings[namespace] = {}
+        if value is None or value == [] or value == {}:
+            s = self._registered_settings[namespace]["_remember"]["value"].get(setting)
+            if s is None and error:
+                raise LetsExcept(error)
+            return s if s else value
+        else:
+            self._registered_settings[namespace]["_remember"]["value"][setting] = value;
+            self._save_settings()
+            return value
     def _get(self, _: "Lets", __: str, args: List[str]) -> int:
         """Print the value of the given settings. If no settings are given, all settings are printed."""
         if len(args) < 1:
