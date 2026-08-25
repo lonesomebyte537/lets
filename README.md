@@ -120,6 +120,20 @@ def build(lets: "Lets", _verb: str, args: List[str]) -> int:
     pass
 ```
 
+### Args
+The args decorator extracts automatically arguments based on regex expressions
+from the command line and passes it as function arguments. Additional options
+can enforce exact matches and/or remember the variables.
+For more complex extraction a callable can be used.
+
+```python
+@verb("flash")
+@args(r"debug|release", r"simulator|silicon", exact=True, remember=["flavor", "target"])
+@args(r"clean")
+def build(lets: "Lets", _verb: str, flavor: str, target: str, clean: list[str], args: List[str]) -> int:
+    pass
+```
+
 ### Settings
 Plugins can declare their own settings, each with a description and a type.
 Users can modify these settings; plugins can read and override them at runtime.

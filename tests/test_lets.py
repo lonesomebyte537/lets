@@ -38,10 +38,10 @@ API methods are called directly from this module the resolved namespace is
 import pathlib
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import lets.core as core_module
-from lets.api import ExecutionEnvironment, Lets
+from lets.api import ExecutionEnvironment, Lets, args, verb
 from lets.core import LetsExcept
 
 # Required so that _get_namespace() resolves to "test" when Lets methods are
@@ -516,10 +516,607 @@ class TestExecute(LetsTestCase):
         self.assertIn("payload", output)
 
 
+# Test that:
+# @args(r"(debug|release)", r"(simulator|silicon)")
+# def my_func(args, flavor, target):
+#    ..
+# my_func(["debug", "simulator"]) should assign flavor="debug" and target="simulator" and args = [].
+# Add all kind of permutations
+
+# ---------------------------------------------------------------------------
+
+LETS_NAMESPACE = "test"  # keep for @args module-scoped decoration
+
+
+def _make_lets_with_args_verb(name: str | list[str], func) -> Lets:
+    """Register *func* as a verb under 'test' and return a fresh Lets()."""
+    core_module._registered_verbs.clear()
+    if isinstance(name, str):
+        name = name.split()
+    core_module._registered_verbs.append(
+        {"name": name, "func": func, "namespace": "test"}
+    )
+    lets = Lets()
+    lets._registered_settings.setdefault("test", {})["_remember"] = {
+        "description": "", "options": None, "value": {}, "type": dict
+    }
+    return lets
+
+
+def _capture(verb_name: str | list[str], patterns, *input_args) -> tuple:
+    """Decorate a mock with @args + @verb, run via _process_arguments, return captured call args."""
+    if isinstance(verb_name, str):
+        verb_name = [verb_name]
+    captured = []
+
+    @args(*patterns)
+    @verb(verb_name[0])
+    def fn(*fn_args, **fn_kwargs):
+        captured.append((list(fn_args), dict(fn_kwargs)))
+        return 0
+
+    lets = _make_lets_with_args_verb(verb_name[0], fn)
+    lets._process_arguments([verb_name[0], *input_args])
+    assert len(captured) == 1
+    return captured[0]
+
+
+# ---------------------------------------------------------------------------
+# @args
+# ---------------------------------------------------------------------------
+
+class TestArgsSinglePattern(LetsTestCase):
+
+    def test_single_pattern_matches(self):
+        """One pattern matches → remaining=[], extracted=[value]."""
+        (a, k) = _capture("sp1", [r"debug|release"], "debug")
+        ext = a[2]  # remaining args after lets+verb
+        pos = a[3]  # first extracted
+        self.assertEqual(pos, [])
+        self.assertEqual(ext, ["debug"])
+
+    def test_single_pattern_no_match_passes_through(self):
+        """No match → all original args remain, extracted=[]."""
+        (a, k) = _capture("sp2", [r"debug|release"], "other")
+        ext = a[2]
+        pos = a[3]
+        self.assertEqual(pos, ["other"])
+        self.assertEqual(ext, [])
+
+    def test_pattern_greedy_removes_all_matches(self):
+        """Multiple occurrences of same matched value are all removed."""
+        (a, k) = _capture("sp3", [r"debug|release"], "debug", "foo", "debug")
+        ext = a[2]
+        pos = a[3]
+        self.assertEqual(pos, ["foo"])
+        self.assertEqual(ext, ["debug", "debug"])
+
+    def test_pattern_matches_last_item(self):
+        (a, k) = _capture("sp4", [r"debug|release"], "foo", "bar", "release")
+        ext = a[2]
+        pos = a[3]
+        self.assertEqual(pos, ["foo", "bar"])
+        self.assertEqual(ext, ["release"])
+
+    def test_pattern_matches_first_item(self):
+        (a, k) = _capture("sp5", [r"debug|release"], "debug", "bar")
+        ext = a[2]
+        pos = a[3]
+        self.assertEqual(pos, ["bar"])
+        self.assertEqual(ext, ["debug"])
+
+
+class TestArgsMultiPattern(LetsTestCase):
+
+    def test_first_pattern_consumes_first_match(self):
+        (a, k) = _capture("mp1", [r"debug|release", r"simulator|silicon"], "debug", "simulator")
+        self.assertEqual(a[2], ["debug"])  # first extracted
+        self.assertEqual(a[3], ["simulator"])  # second extracted
+        self.assertEqual(a[4], [])         # remaining
+
+    def test_second_pattern_consumes_first_match(self):
+        (a, k) = _capture("mp2", [r"debug|release", r"simulator|silicon"], "foo", "silicon")
+        self.assertEqual(a[2], [])
+        self.assertEqual(a[3], ["silicon"])
+        self.assertEqual(a[4], ["foo"])
+
+    def test_neither_pattern_matches(self):
+        (a, k) = _capture("mp3", [r"debug|release", r"simulator|silicon"], "foo", "bar")
+        self.assertEqual(a[2], [])
+        self.assertEqual(a[3], [])
+        self.assertEqual(a[4], ["foo", "bar"])  # original args untouched
+
+    def test_first_pattern_consumes_second(self):
+        (a, k) = _capture("mp4", [r"debug|release", r"simulator|silicon"], "foo", "debug")
+        self.assertEqual(a[2], ["debug"])
+        self.assertEqual(a[3], [])
+        self.assertEqual(a[4], ["foo"])
+
+    def test_both_patterns_match_scattered(self):
+        (a, k) = _capture("mp5", [r"debug|release", r"simulator|silicon"], "x", "debug", "y", "silicon")
+        self.assertEqual(a[2], ["debug"])
+        self.assertEqual(a[3], ["silicon"])
+        self.assertEqual(a[4], ["x", "y"])    # unmatched items preserved in order
+
+    def test_first_pattern_greedy_second_empty(self):
+        (a, k) = _capture("mp6", [r"debug|release", r"simulator|silicon"], "debug", "release")
+        self.assertEqual(a[2], ["debug", "release"])
+        self.assertEqual(a[3], [])
+        self.assertEqual(a[4], [])
+
+    def test_first_empty_second_consumes_all(self):
+        (a, k) = _capture("mp7", [r"debug|release", r"simulator|silicon"], "simulator", "silicon")
+        self.assertEqual(a[2], [])
+        self.assertEqual(a[3], ["simulator", "silicon"])
+        self.assertEqual(a[4], [])
+
+    def test_first_empty_second_consumes_one(self):
+        (a, k) = _capture("mp8", [r"debug|release", r"simulator|silicon"], "debug", "silicon")
+        # pattern 1 consumes "debug", pattern 2 consumes "silicon"
+        self.assertEqual(a[2], ["debug"])
+        self.assertEqual(a[3], ["silicon"])
+        self.assertEqual(a[4], [])
+
+
+class TestArgsEdgeCases(LetsTestCase):
+
+    def test_empty_input_args(self):
+        """No input args → remaining is empty, all extracted are []."""
+        (a, k) = _capture("ea1", [r"debug|release"])
+        self.assertEqual(a[2], [])
+        self.assertEqual(a[3], [])
+
+    def test_single_arg_no_pattern_match(self):
+        """One arg that doesn't match any pattern."""
+        (a, k) = _capture("ea2", [r"debug|release", r"simulator|silicon"], "only_one")
+        self.assertEqual(a[2], [])
+        self.assertEqual(a[3], [])
+        self.assertEqual(a[4], ["only_one"])
+
+    def test_three_patterns_few_matches(self):
+        """Three patterns but fewer matching args."""
+        (a, k) = _capture("ea3", [r"a", r"b", r"c"], "x", "b")
+        self.assertEqual(a[2], [])
+        self.assertEqual(a[3], ["b"])
+        self.assertEqual(a[4], [])
+        self.assertEqual(a[5], ["x"])
+
+    def test_same_value_matches_first_pattern_not_second(self):
+        """A value that could match a broader second pattern is consumed by the first."""
+        (a, k) = _capture("ea4", [r"debug", r".*"], "debug")
+        # After first pattern removes "debug", remaining is empty, second gets nothing
+        self.assertEqual(a[2], ["debug"])
+        self.assertEqual(a[3], [])
+        self.assertEqual(a[4], [])
+
+
+class TestArgsRegexBehavior(LetsTestCase):
+
+    def test_word_boundary_regex(self):
+        r"""Patterns can use word boundaries — \bdebug\b matches 'debug' but not 'debugger'."""
+        (a, k) = _capture("rb1", [r"\bdebug\b"], "debugger")
+        self.assertEqual(a[2], [])
+        self.assertEqual(a[3], ["debugger"])  # NOT matched
+
+    def test_digit_pattern(self):
+        """Regex with character classes like digits."""
+        (a, k) = _capture("rb2", [r"\d+"], "42")
+        self.assertEqual(a[2], ["42"])
+        self.assertEqual(a[3], [])
+
+    def test_start_anchor(self):
+        r"""Pattern anchored at start matches prefix."""
+        (a, k) = _capture("rb3", [r"^app-\d+"], "app-123")
+        self.assertEqual(a[2], ["app-123"])
+        self.assertEqual(a[3], [])
+
+    def test_case_insensitive_flag(self):
+        """re.IGNORECASE allows matching across cases."""
+        (a, k) = _capture("rb4", [r"(?i)debug"], "DEBUG")
+        self.assertEqual(a[2], ["DEBUG"])
+        self.assertEqual(a[3], [])
+
+    def test_alternation_within_pattern(self):
+        r"""A single pattern with | alternation."""
+        (a, k) = _capture("rb5", [r"foo|bar|baz"], "bar")
+        self.assertEqual(a[2], ["bar"])
+        self.assertEqual(a[3], [])
+
+    def test_non_greedy_vs_fullmatch(self):
+        """re.fullmatch requires the entire string to match the pattern."""
+        # "^app" would partially match "app123", but fullmatch requires total
+        (a, k) = _capture("rb6", [r"^app$"], "app123")
+        self.assertEqual(a[2], [])
+        self.assertEqual(a[3], ["app123"])  # does NOT match ^app$ under fullmatch
+
+
+class TestArgsCascaded(LetsTestCase):
+
+    def _capture_cascaded(self, patterns_first: str, patterns_second: str, *input_args):
+        """Decorate a mock with two @args calls, run via _process_arguments, return captured call args."""
+        captured = []
+
+        @args(patterns_first)
+        @args(patterns_second)
+        @verb("cc")
+        def fn(*fn_args, **fn_kwargs):
+            captured.append((list(fn_args), dict(fn_kwargs)))
+            return 0
+
+        core_module._registered_verbs.clear()
+        lets = self._make_lets_with_verb("cc", fn)
+        lets._process_arguments(["cc", *input_args])
+        assert len(captured) == 1, f"Expected 1 call, got {len(captured)}"
+        return captured[0]
+
+    def test_cascaded_both_match(self):
+        """Two separate decorators each match one value."""
+        (a, k) = self._capture_cascaded(r"debug|release", r"simulator|silicon", "debug", "simulator")
+        self.assertEqual(a[2], ["debug"])   # first decorator's extracted
+        self.assertEqual(a[3], ["simulator"])  # second decorator's extracted
+        self.assertEqual(a[4], [])            # remaining
+
+    def test_cascaded_reverse_order_values(self):
+        """Values in reverse order — each pattern finds its match."""
+        (a, k) = self._capture_cascaded(r"debug|release", r"simulator|silicon", "simulator", "debug")
+        self.assertEqual(a[2], ["debug"])
+        self.assertEqual(a[3], ["simulator"])
+        self.assertEqual(a[4], [])
+
+    def test_cascaded_first_missing(self):
+        """Only the second pattern matches."""
+        (a, k) = self._capture_cascaded(r"debug|release", r"simulator|silicon", "silicon")
+        self.assertEqual(a[2], [])
+        self.assertEqual(a[3], ["silicon"])
+        self.assertEqual(a[4], [])
+
+    def test_cascaded_second_missing(self):
+        """Only the first pattern matches."""
+        (a, k) = self._capture_cascaded(r"debug|release", r"simulator|silicon", "release")
+        self.assertEqual(a[2], ["release"])
+        self.assertEqual(a[3], [])
+        self.assertEqual(a[4], [])
+
+    def test_cascaded_neither_matches(self):
+        """No args match — everything passes through in remaining."""
+        (a, k) = self._capture_cascaded(r"debug|release", r"simulator|silicon", "foo")
+        self.assertEqual(a[2], [])
+        self.assertEqual(a[3], [])
+        self.assertEqual(a[4], ["foo"])
+
+    def test_cascaded_reversed_decorator_order(self):
+        """Swapping decorator order produces same result."""
+        captured = []
+
+        @args(r"simulator|silicon")
+        @args(r"debug|release")
+        @verb("cr")
+        def fn(*fn_args, **fn_kwargs):
+            captured.append((list(fn_args), dict(fn_kwargs)))
+            return 0
+
+        core_module._registered_verbs.clear()
+        lets = self._make_lets_with_verb("cr", fn)
+        lets._process_arguments(["cr", "debug", "silicon"])
+        (a, k) = captured[0]
+        # first decorator (outer = silicon pattern) extracts second; second extracts first
+        self.assertEqual(a[2], ["silicon"])
+        self.assertEqual(a[3], ["debug"])
+        self.assertEqual(a[4], [])
+
+
+class TestArgsExact(LetsTestCase):
+
+    def test_exact_zero_matches_raises(self):
+        """exact=True with no matching argument raises LetsExcept."""
+        @args(r"debug|release", exact=True)
+        @verb("ex0")
+        def fn(*fn_args, **fn_kwargs):
+            return 0
+
+        lets = _make_lets_with_args_verb("ex0", fn)
+        with self.assertRaises(LetsExcept) as ctx:
+            # Call the wrapper directly (args=(lets_instance, ["verbose"]))
+            fn(lets, ["verbose"])
+        self.assertIn("Expected exactly one match", str(ctx.exception))
+
+    def test_exact_one_match_passes(self):
+        """exact=True with exactly one matching argument works."""
+        (a, k) = _capture("ex1", [r"debug|release", r"(?i)exact"], "debug")
+        self.assertEqual(a[2], ["debug"])
+        self.assertEqual(a[3], [])
+
+    def test_exact_two_matches_raises(self):
+        """exact=True with two matching arguments raises LetsExcept."""
+        @args(r"debug|release", exact=True)
+        @verb("ex2")
+        def fn(*fn_args, **fn_kwargs):
+            return 0
+
+        lets = _make_lets_with_args_verb("ex2", fn)
+        with self.assertRaises(LetsExcept) as ctx:
+            # Call the wrapper directly (args=(lets_instance, ["debug", "release"]))
+            fn(lets, ["debug", "release"])
+        self.assertIn("Expected exactly one match", str(ctx.exception))
+
+
+class TestArgsRemember(LetsTestCase):
+
+    def test_remember_stores_and_restores_single_value(self):
+        """First call stores the match; second call with no match returns the stored value."""
+        captured = []
+
+        @args(r"debug|release", remember=["flavor"])
+        @verb("rem1")
+        def fn(*fn_args, **fn_kwargs):
+            captured.append((list(fn_args), dict(fn_kwargs)))
+            return 0
+
+        lets = _make_lets_with_args_verb("rem1", fn)
+
+        # First call: "debug" matches → flavor remembered and passed as arg
+        lets._process_arguments(["rem1", "debug"])
+        self.assertEqual(
+            lets._registered_settings["test"]["_remember"]["value"].get("flavor"),
+            ["debug"],
+        )
+        (fn_args, _) = captured[-1]
+        # fn_args[2] = flavor matches list
+        self.assertEqual(fn_args[2], ["debug"])
+
+        # Second call: no matching arg → flavor restored from memory
+        captured.clear()
+        lets._process_arguments(["rem1"])
+        (fn_args, _) = captured[-1]
+        self.assertEqual(fn_args[2], ["debug"])  # restored from remember
+
+    def test_remember_multiple_values(self):
+        """Two patterns remember two values; both restored on empty call."""
+        captured = []
+
+        @args(r"debug|release", r"simulator|silicon", remember=["flavor", "target"])
+        @verb("rem2")
+        def fn(*fn_args, **fn_kwargs):
+            captured.append((list(fn_args), dict(fn_kwargs)))
+            return 0
+
+        lets = _make_lets_with_args_verb("rem2", fn)
+
+        # Store values
+        lets._process_arguments(["rem2", "debug", "silicon"])
+        (fn_args, _) = captured[-1]
+        self.assertEqual(fn_args[2], ["debug"])
+        self.assertEqual(fn_args[3], ["silicon"])
+        self.assertEqual(
+            lets._registered_settings["test"]["_remember"]["value"],
+            {"flavor": ["debug"], "target": ["silicon"]},
+        )
+
+        # Restore both on next call
+        captured.clear()
+        lets._process_arguments(["rem2"])
+        (fn_args, _) = captured[-1]
+        self.assertEqual(fn_args[2], ["debug"])  # restored from memory
+        self.assertEqual(fn_args[3], ["silicon"])  # restored from memory
+
+    def test_remember_overwrites_on_new_match(self):
+        """A new invocation with a different value replaces the old remembered value."""
+        captured = []
+
+        @args(r"debug|release", remember=["flavor"])
+        @verb("rem3")
+        def fn(*fn_args, **fn_kwargs):
+            captured.append((list(fn_args), dict(fn_kwargs)))
+            return 0
+
+        lets = _make_lets_with_args_verb("rem3", fn)
+
+        lets._process_arguments(["rem3", "debug"])
+        self.assertEqual(
+            lets._registered_settings["test"]["_remember"]["value"]["flavor"],
+            ["debug"],
+        )
+
+        # New value should overwrite
+        captured.clear()
+        lets._process_arguments(["rem3", "release"])
+        (fn_args, _) = captured[-1]
+        self.assertEqual(fn_args[2], ["release"])  # new match takes precedence
+        self.assertEqual(
+            lets._registered_settings["test"]["_remember"]["value"]["flavor"],
+            ["release"],
+        )
+
+    def test_remember_partial_match_restores_unmatched(self):
+        """When only one of two patterns matches, the other is restored from memory."""
+        captured = []
+
+        @args(r"debug|release", r"simulator|silicon", remember=["flavor", "target"])
+        @verb("rem4")
+        def fn(*fn_args, **fn_kwargs):
+            captured.append((list(fn_args), dict(fn_kwargs)))
+            return 0
+
+        lets = _make_lets_with_args_verb("rem4", fn)
+
+        # Remember both
+        lets._process_arguments(["rem4", "debug", "silicon"])
+        self.assertEqual(captured[-1][0][2], ["debug"])
+        self.assertEqual(captured[-1][0][3], ["silicon"])
+
+        # Only second pattern matches now
+        captured.clear()
+        lets._process_arguments(["rem4", "simulator"])
+        (fn_args, _) = captured[-1]
+        self.assertEqual(fn_args[2], ["debug"])  # restored from memory
+        self.assertEqual(fn_args[3], ["simulator"])  # updated by new match
+
+    def test_remember_empty_no_match_returns_empty_list(self):
+        """With no prior storage and no match, remember returns []."""
+        captured = []
+
+        @args(r"debug|release", remember=["flavor"])
+        @verb("rem5")
+        def fn(*fn_args, **fn_kwargs):
+            captured.append((list(fn_args), dict(fn_kwargs)))
+            return 0
+
+        lets = _make_lets_with_args_verb("rem5", fn)
+
+        # No match, nothing stored yet → flavor should be []
+        lets._process_arguments(["rem5"])
+        (fn_args, _) = captured[-1]
+        self.assertEqual(fn_args[2], [])
+
+    def test_remember_exact_true_stores_scalar(self):
+        """When exact=True, the single match is passed as a scalar to the function.
+
+        Note: _remember_setting() is called *before* the exact extraction (line 86
+        in api.py), so what gets persisted to storage is still the raw list ``["debug"]``.
+        The function receives ``"debug"`` because the post-remember path applies exact=True.
+        """
+        captured = []
+
+        @args(r"debug|release", exact=True, remember=["flavor"])
+        @verb("rem6")
+        def fn(*fn_args, **fn_kwargs):
+            captured.append((list(fn_args), dict(fn_kwargs)))
+            return 0
+
+        lets = _make_lets_with_args_verb("rem6", fn)
+
+        # Single match → function gets scalar via exact=True
+        lets._process_arguments(["rem6", "debug"])
+        self.assertEqual(captured[-1][0][2], "debug")
+        # Storage holds the raw list because remember runs before exact extraction
+        self.assertEqual(
+            lets._registered_settings["test"]["_remember"]["value"]["flavor"],
+            ["debug"],
+        )
+
+    def test_remember_with_no_match_raises_when_exact(self):
+        """When remember restores a single-item list and exact=True, the check passes.
+
+        ``len(["debug"]) == 1`` so no exception is raised — the list is treated as the
+        single match (which is the same count).  This means restoring from memory works
+        with exact=True even though the value type differs from a fresh match.
+        """
+        captured = []
+
+        @args(r"debug|release", exact=True, remember=["flavor"])
+        @verb("rem7")
+        def fn(*fn_args, **fn_kwargs):
+            captured.append((list(fn_args), dict(fn_kwargs)))
+            return 0
+
+        lets = _make_lets_with_args_verb("rem7", fn)
+
+        # First call stores value
+        lets._process_arguments(["rem7", "debug"])
+        self.assertEqual(captured[-1][0][2], "debug")
+
+        # Second call: exact=True + remember → len(["debug"]) == 1 → no error, scalar passed
+        captured.clear()
+        lets._process_arguments(["rem7"])
+        (fn_args, _) = captured[-1]
+        self.assertEqual(fn_args[2], "debug")  # exact extracts from single-item list
+
+    def test_remember_restore_then_update(self):
+        """Restore from memory, then update with a new value."""
+        captured = []
+
+        @args(r"debug|release", r"(?i)simulator|silicon", remember=["flavor", "target"])
+        @verb("rem8")
+        def fn(*fn_args, **fn_kwargs):
+            captured.append((list(fn_args), dict(fn_kwargs)))
+            return 0
+
+        lets = _make_lets_with_args_verb("rem8", fn)
+
+        # Initial store
+        lets._process_arguments(["rem8", "debug", "silicon"])
+        self.assertEqual(captured[-1][0][2], ["debug"])
+        self.assertEqual(captured[-1][0][3], ["silicon"])
+
+        # Restore both (via remember, no matching input)
+        captured.clear()
+        lets._process_arguments(["rem8"])
+        (fn_args, _) = captured[-1]
+        self.assertEqual(fn_args[2], ["debug"])
+        self.assertEqual(fn_args[3], ["silicon"])
+
+        # Update only first, second stays in memory
+        captured.clear()
+        lets._process_arguments(["rem8", "release"])
+        (fn_args, _) = captured[-1]
+        self.assertEqual(fn_args[2], ["release"])  # new match
+        self.assertEqual(fn_args[3], ["silicon"])  # restored from memory
+
+    def test_remember_multiple_matches_per_pattern(self):
+        """Pattern with multiple matches remembers all of them."""
+        captured = []
+
+        @args(r"debug|release", remember=["flavors"])
+        @verb("rem9")
+        def fn(*fn_args, **fn_kwargs):
+            captured.append((list(fn_args), dict(fn_kwargs)))
+            return 0
+
+        lets = _make_lets_with_args_verb("rem9", fn)
+
+        # Multiple matches for same pattern
+        lets._process_arguments(["rem9", "debug", "release"])
+        self.assertEqual(captured[-1][0][2], ["debug", "release"])
+        self.assertEqual(
+            lets._registered_settings["test"]["_remember"]["value"]["flavors"],
+            ["debug", "release"],
+        )
+
+
+class TestArgsCallableMatcher(LetsTestCase):
+
+    def test_callable_matcher_mixed_with_regex(self):
+        """Callable and regex patterns work together in the same @args."""
+        captured = []
+
+        @args(r"debug|release", lambda lets, args: ([a for a in args if a.startswith("dev")], [a for a in args if not a.startswith("dev")]))
+        @verb("ca4")
+        def fn(*fn_args, **fn_kwargs):
+            captured.append((list(fn_args), dict(fn_kwargs)))
+            return 0
+
+        lets = _make_lets_with_args_verb("ca4", fn)
+        lets._process_arguments(["ca4", "debug", "dev123", "foo"])
+        (fn_args, _) = captured[-1]
+        # First pattern extracts "debug" from remaining, then callable sees ["dev123", "foo"]
+        self.assertEqual(fn_args[2], ["debug"])
+        self.assertEqual(fn_args[3], ["dev123"])
+        self.assertEqual(fn_args[4], ["foo"])
+
+    def test_callable_matcher_multiple_callables(self):
+        """Two callable matchers work in sequence; second sees post-first result."""
+        captured = []
+
+        @args(
+            lambda lets, args: ([a for a in args if a == "x"], [a for a in args if a != "x"]),
+            lambda lets, args: ([a for a in args if a == "y"], [a for a in args if a != "y"]),
+        )
+        @verb("ca6")
+        def fn(*fn_args, **fn_kwargs):
+            captured.append((list(fn_args), dict(fn_kwargs)))
+            return 0
+
+        lets = _make_lets_with_args_verb("ca6", fn)
+        lets._process_arguments(["ca6", "x", "y", "z"])
+        (fn_args, _) = captured[-1]
+        self.assertEqual(fn_args[2], ["x"])
+        self.assertEqual(fn_args[3], ["y"])
+        self.assertEqual(fn_args[4], ["z"])
+
+
 # ---------------------------------------------------------------------------
 # table()
 # ---------------------------------------------------------------------------
-
 class TestTable(LetsTestCase):
 
     def test_table_supports_all_list_dict_combinations(self):
