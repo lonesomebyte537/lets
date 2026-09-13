@@ -6,6 +6,71 @@ In addition, Lets offers a framework that makes it straightforward for developer
 
 An extensive working example is available under `./example/demo.py`. Check it out! 
 
+## Installation
+
+### Requirements
+
+- Python >= 3.12
+- pip
+
+### Install from source
+
+```bash
+git clone https://github.com/lonesomebyte537/lets.git
+cd lets
+pip install .
+```
+
+Tip: use a virtual environment to keep the install isolated:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install .
+```
+
+### Development install
+
+To work on Lets itself, install in editable mode:
+
+```bash
+pip install -e .
+```
+
+### Verify the installation
+
+```bash
+lets help
+```
+
+### Running the tests
+
+The test suite is based on the standard library `unittest` module, so no extra dependencies are needed:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+### Trying the demo
+
+```bash
+cd example
+lets help
+lets show apps
+```
+
+See `example/README.md` for a full walkthrough of the demo.
+
+### Devcontainer
+
+A devcontainer is provided under `.devcontainer/` (Python 3.12 image). In VS Code, use "Reopen in Container" to get a ready‑to‑use environment.
+
+### Uninstall
+
+```bash
+pip uninstall lets
+```
+
 ## For the user
 
 ### Simple natural commands
