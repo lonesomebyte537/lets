@@ -42,6 +42,9 @@ def _match_apps(lets: "Lets", args: List[str]) -> Tuple[List[str], List[str]]:
     matched_apps = lets.fuzzy_find(args, apps, require_match=True, no_match_error="Unknown app")
     return matched_apps, args
 
+# Expose the possible app names so completion (LETS_COMPLETE) can show them.
+_match_apps.__lets_options__ = _get_apps
+
 def _match_boards(lets: "Lets", args: List[str]) -> Tuple[List[str], List[str]]:
     """ Helper method to match the board names from the arguments. """
     # The user can choose from the registered boards.
@@ -50,6 +53,14 @@ def _match_boards(lets: "Lets", args: List[str]) -> Tuple[List[str], List[str]]:
     # Extract the boards from the arguments
     matched_boards = lets.extract(list(boards.keys()), args)
     return matched_boards, args
+
+def _board_options(lets: "Lets") -> List[str]:
+    """ Helper method to list the registered board names for completion (LETS_COMPLETE)."""
+    boards = lets.get_setting("boards")
+    return list(boards.keys()) if boards else []
+
+# Expose the possible board names so completion (LETS_COMPLETE) can show them.
+_match_boards.__lets_options__ = _board_options
 
 def init(lets):
     # Register a setting for the boards.

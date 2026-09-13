@@ -171,7 +171,29 @@ SUMMARY</b><br>
   - lets build hello: Build hello_cruel_world and hello_beautiful_world
   - lets build: Build the last used apps
 
-</code>
+ </code>
+
+### Shell completion
+A zsh completion is provided under `completions/`. As you type, it suggests verbs
+and their options by asking Lets itself for the valid options of the current
+command line (through the `LETS_COMPLETE` environment variable) and offering
+them as candidates.
+
+To enable it, either add the `completions` directory to your zsh `fpath` (and make
+sure `compinit` is run at startup), or source the completion file from your `.zshrc`:
+
+```bash
+# Option A: fpath + compinit
+fpath=("/path/to/lets/completions" $fpath)
+autoload -Uz compinit && compinit
+
+# Option B: source the file directly
+source /path/to/lets/completions/_lets
+```
+
+Replace `/path/to/lets` with the location of the repository. The completion lives
+in the source tree, so if Lets was installed with `pip` grab the file from the
+repository (or a clone of it).
 
 ## For the developer
 
