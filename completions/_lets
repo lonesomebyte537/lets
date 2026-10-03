@@ -1,0 +1,86 @@
+#compdef lets
+
+# Zsh completion for the `lets` command.
+#
+# Completion is driven by lets itself. For the current command line the
+# function runs
+#
+#     LETS_COMPLETE=1 lets <words already typed after 'lets'>
+#
+# and turns every line lets prints into completion candidates. lets prints:
+#
+#   * the first word of every verb               -> one candidate each
+#   * the full (possibly multi-word) verb name    -> the part that is left
+#                                                     to type after the words
+#                                                     already on the line
+#   * name=value1|value2 for remembered options  -> one candidate per value
+#   * a bare word for unremembered flags/options -> one candidate
+#
+# Install by either adding this directory to fpath (and making sure compinit
+# is run in your shell startup), or by sourcing this file from .zshrc:
+#
+#     fpath=(/path/to/lets/completions $fpath)   # option A
+#     autoload -Uz compinit && compinit
+#
+#     source /path/to/lets/completions/_lets      # option B
+
+_lets() {
+    # Words already typed after 'lets', excluding the word being completed.
+    # These are complete words, so lets resolves them to a verb and prints
+    # all of its still-available options; zsh then filters them by the
+    # current (partially typed) word.
+    #
+    # Note: this must copy the words as separate array elements. A range
+    # subscript inside a quoted expansion ( "${words[2,N]}") collapses to a
+    # single "word1 word2" element, which lets would then receive as one
+    # argument. The 0-based subarray slice "${words[@]:1:$n}" preserves each
+    # word (and any glob characters in them) as its own element.
+    local -a context
+    local n
+    if (( CURRENT > 2 )); then
+        n=$(( CURRENT - 2 ))
+        context=( "${words[@]:1:$n}" )
+    else
+        context=()
+    fi
+
+    # The prefix to strip from full multi-word verb names (context + space).
+    local ctx_prefix="${(j: :)context} "
+
+    # Ask lets for the options for the current parameter list.
+    # ("${context[@]}" expands to nothing when context is empty, so 'lets'
+    #  is simply called with no arguments in that case.)
+    local output
+    output="$(LETS_COMPLETE=1 lets "${context[@]}" 2>/dev/null)"
+    [[ -n $output ]] || return 0
+
+    local -a lines
+    lines=("${(@f)output}")
+
+    # Declare the loop variables once (a bare 'local x' re-declared while x is
+    # already set prints 'x=value' under 'set -u', so only assign in the loop).
+    local line name value rest
+    local -a values
+    for line in "${lines[@]}"; do
+        [[ -z $line ]] && continue
+
+        if [[ $line == *" "* ]]; then
+            # A full (multi-word) verb name: offer only the part that still
+            # has to be typed.
+            rest="${line#"$ctx_prefix"}"
+            [[ -n $rest && $rest != "$line" ]] && compadd -- "$rest"
+        elif [[ $line == *"="* ]]; then
+            # A remembered option: name=value1|value2
+            name="${line%%=*}"
+            values=("${(s:|:)line#*=}")
+            for value in "${values[@]}"; do
+                [[ -n $value ]] && compadd -d "$name" -- "$value"
+            done
+        else
+            # A single word: a verb, a flag or an option name.
+            compadd -- "$line"
+        fi
+    done
+}
+
+compdef _lets lets

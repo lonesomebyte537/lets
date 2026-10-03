@@ -6,6 +6,71 @@ In addition, Lets offers a framework that makes it straightforward for developer
 
 An extensive working example is available under `./example/demo.py`. Check it out! 
 
+## Installation
+
+### Requirements
+
+- Python >= 3.12
+- pip
+
+### Install from source
+
+```bash
+git clone https://github.com/lonesomebyte537/lets.git
+cd lets
+pip install .
+```
+
+Tip: use a virtual environment to keep the install isolated:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install .
+```
+
+### Development install
+
+To work on Lets itself, install in editable mode:
+
+```bash
+pip install -e .
+```
+
+### Verify the installation
+
+```bash
+lets help
+```
+
+### Running the tests
+
+The test suite is based on the standard library `unittest` module, so no extra dependencies are needed:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+### Trying the demo
+
+```bash
+cd example
+lets help
+lets show apps
+```
+
+See `example/README.md` for a full walkthrough of the demo.
+
+### Devcontainer
+
+A devcontainer is provided under `.devcontainer/` (Python 3.12 image). In VS Code, use "Reopen in Container" to get a ready‑to‑use environment.
+
+### Uninstall
+
+```bash
+pip uninstall lets
+```
+
 ## For the user
 
 ### Simple natural commands
@@ -106,7 +171,29 @@ SUMMARY</b><br>
   - lets build hello: Build hello_cruel_world and hello_beautiful_world
   - lets build: Build the last used apps
 
-</code>
+ </code>
+
+### Shell completion
+A zsh completion is provided under `completions/`. As you type, it suggests verbs
+and their options by asking Lets itself for the valid options of the current
+command line (through the `LETS_COMPLETE` environment variable) and offering
+them as candidates.
+
+To enable it, either add the `completions` directory to your zsh `fpath` (and make
+sure `compinit` is run at startup), or source the completion file from your `.zshrc`:
+
+```bash
+# Option A: fpath + compinit
+fpath=("/path/to/lets/completions" $fpath)
+autoload -Uz compinit && compinit
+
+# Option B: source the file directly
+source /path/to/lets/completions/_lets
+```
+
+Replace `/path/to/lets` with the location of the repository. The completion lives
+in the source tree, so if Lets was installed with `pip` grab the file from the
+repository (or a clone of it).
 
 ## For the developer
 

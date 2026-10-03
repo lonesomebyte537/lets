@@ -7,7 +7,7 @@ name = "lets"
 version = "0.6"
 description = "Command‑line interpreter to make task execution more natural and intuitive"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = []
@@ -17,7 +17,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Topic :: Software Development :: Release Tools",
-    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.12",
 ]
 
 [project.urls]

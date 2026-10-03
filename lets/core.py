@@ -23,7 +23,9 @@ In addition, Lets offers a framework that makes it straightforward for developer
 
 import importlib.util
 import inspect
+import os
 import pathlib
+import re
 import shutil
 import sys
 import textwrap
@@ -47,6 +49,48 @@ def _display_width(s: str) -> int:
 def _display_ljust(s: str, width: int) -> str:
     """Left-justify a string to the given display width."""
     return s + ' ' * (width - _display_width(s))
+
+
+def _split_regex_alternatives(pattern: str) -> List[str]:
+    """Split a regular expression into its top-level alternatives.
+
+    The pattern is split on '|' characters that are not nested inside a group
+    (...) or a character class [...]. This is used to derive the concrete
+    option values a regex matcher accepts (e.g. 'debug|release' ->
+    ['debug', 'release']).
+    """
+    parts: List[str] = []
+    current: List[str] = []
+    depth = 0
+    in_class = False
+    i = 0
+    while i < len(pattern):
+        c = pattern[i]
+        if in_class:
+            current.append(c)
+            if c == "]":
+                in_class = False
+        elif c == "\\" and i + 1 < len(pattern):
+            current.append(c)
+            current.append(pattern[i + 1])
+            i += 1
+        elif c == "[":
+            in_class = True
+            current.append(c)
+        elif c == "(":
+            depth += 1
+            current.append(c)
+        elif c == ")":
+            depth -= 1
+            current.append(c)
+        elif c == "|" and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(c)
+        i += 1
+    parts.append("".join(current))
+    return parts
 
 
 LETS_NAMESPACE = "lets"
@@ -408,12 +452,150 @@ class LetsCore:
         self._save_settings()
         return 0
 
+    def _complete(self, context: List[str]) -> int:
+        """Print the options that are possible for the given command prefix.
+
+        If no context is given, all possible first words (verbs) are printed,
+        one per line. If the context resolves to a verb, the options accepted
+        by that verb are printed, one per line, in the form
+        'name=value1|value2'. Options whose matcher is already satisfied by one
+        of the context arguments are omitted. If the context is a prefix of one
+        or more verbs (including multi-word verbs), the matching verb names are
+        printed.
+        """
+        if not context:
+            seen: List[str] = []
+            for verb in self._verbs:
+                first = verb["verb"][0]
+                if first not in seen:
+                    seen.append(first)
+                    print(first)
+            return 0
+
+        match = self._find_match(context)
+        if match:
+            self._print_verb_options(match[0], match[1])
+            return 0
+
+        # The context does not resolve to a full verb; print the verbs whose
+        # name the context is a leading prefix of (multi-word verbs included).
+        for verb in self._verbs:
+            if self._verb_matches_context(verb["verb"], context):
+                print(" ".join(verb["verb"]))
+        return 0
+
+    @staticmethod
+    def _verb_matches_context(verb_words: List[str], context: List[str]) -> bool:
+        """Return True when context is a leading prefix of a verb name.
+
+        All context words except the last must equal the corresponding verb
+        words; the last context word must be a prefix of the corresponding
+        verb word. This lets a multi-word verb such as 'show apps' match the
+        context 'show a'.
+        """
+        if not context or len(context) > len(verb_words):
+            return False
+        if verb_words[: len(context) - 1] != context[: len(context) - 1]:
+            return False
+        return verb_words[len(context) - 1].startswith(context[-1])
+
+    def _print_verb_options(self, verb: VerbType, provided_args: Optional[List[str]] = None) -> None:
+        """Print the options accepted by the given verb, one per line.
+
+        Options with a remember name are printed as 'name=value1|value2' (or
+        just 'name' when no values can be derived), options without a remember
+        name (e.g. a 'clean' flag) are printed as their possible values, and
+        an option is omitted when one of provided_args already satisfies its
+        matcher. The built-in get/set verbs have no @args matchers; for them
+        the registered settings are offered as the values of a 'config_name'
+        parameter. The full option set is always printed; narrowing candidates
+        to a partially typed word is left to the shell (zsh filters the
+        candidates by the word being completed).
+        """
+        provided_args = provided_args or []
+        matchers = self._collect_arg_matchers(verb["process_func"])
+
+        if not matchers and verb["namespace"] == "lets" and verb["verb"] in (["get"], ["set"]):
+            options = self._available_settings
+            if options and not any(
+                self._arg_covers_option(arg, option)
+                for arg in provided_args
+                for option in options
+            ):
+                print("config_name=" + "|".join(options))
+            return
+
+        for matcher, name in matchers:
+            if self._matcher_satisfied(matcher, provided_args):
+                continue
+            options = self._matcher_options(matcher)
+            if name is None:
+                if options:
+                    print("|".join(options))
+            elif options:
+                print(f"{name}=" + "|".join(options))
+            else:
+                print(name)
+
+    def _matcher_satisfied(self, matcher: Any, provided_args: List[str]) -> bool:
+        """Return True when a provided argument already satisfies the matcher.
+
+        Regex matchers use the same full-match rule as @args. Callable
+        matchers are checked against their advertised option values.
+        """
+        for arg in provided_args:
+            if callable(matcher):
+                if any(self._arg_covers_option(arg, o) for o in self._matcher_options(matcher)):
+                    return True
+            elif re.fullmatch(matcher, arg):
+                return True
+        return False
+
+    @staticmethod
+    def _arg_covers_option(arg: str, option: str) -> bool:
+        """Return True when a provided argument covers an option value.
+
+        Matches exactly or as a case-insensitive substring, mirroring the
+        fuzzy matching used by the callable matchers.
+        """
+        return arg.lower() in option.lower()
+
+    def _collect_arg_matchers(self, func: Any) -> List[Tuple[Any, Optional[str]]]:
+        """Collect all (matcher, remember-name) pairs from the @args chain."""
+        matchers: List[Tuple[Any, Optional[str]]] = []
+        current = func
+        while current is not None:
+            own = getattr(current, "__lets_arg_matchers__", None)
+            if own:
+                matchers.extend(own)
+            current = getattr(current, "__wrapped__", None)
+        return matchers
+
+    def _matcher_options(self, matcher: Any) -> List[str]:
+        """Derive the concrete option values accepted by a single matcher."""
+        if callable(matcher):
+            options = getattr(matcher, "__lets_options__", None)
+            if options is None:
+                return []
+            if callable(options):
+                try:
+                    options = options(self)
+                except TypeError:
+                    options = options()
+            return [str(o) for o in options]
+        alternatives = _split_regex_alternatives(matcher)
+        clean = [a for a in alternatives if re.fullmatch(r"[A-Za-z0-9_.\-/]+", a)]
+        return clean if clean else [a for a in alternatives if a]
+
     @property
-    def _available_settings(self) -> Set[str]:
-        return {
-            s["setting"] if namespace is None else f"{namespace}.{s['setting']}"
-            for namespace, s in self._registered_settings.items()
-        }
+    def _available_settings(self) -> List[str]:
+        """Return all non-protected settings as 'namespace.name', sorted."""
+        return sorted(
+            f"{namespace}.{name}"
+            for namespace, settings in self._registered_settings.items()
+            for name in settings
+            if not name.startswith("_")
+        )
 
     # pylint: disable=too-many-statements, too-many-locals, too-many-branches
     def _help(self, _: "Lets", __: str, args: List[str]) -> int:
@@ -613,6 +795,10 @@ class LetsCore:
 
     def _process_arguments(self, args: List[str]) -> int:
         """Process the arguments and executes the correct verb."""
+        # When LETS_COMPLETE is defined, print completions for the given
+        # parameter list instead of executing the matched verb.
+        if os.environ.get("LETS_COMPLETE"):
+            return self._complete(args)
         if not args:
             self._help(self, "help", [])
             return -1

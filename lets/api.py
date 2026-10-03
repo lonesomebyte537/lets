@@ -137,6 +137,10 @@ def args(*arg_matchers: ArgMatcher, exact: Optional[bool] = False, remember: Opt
                 extracted_args.append(matches)  # Append the list of matches
 
             return func(*args[:-1], *extracted_args, remaining_args, **kwargs)
+        # Record the matchers (and their optional "remember" names) so that
+        # completion (LETS_COMPLETE) can introspect the options a verb accepts.
+        remember_names = remember if remember is not None else [None] * len(arg_matchers)
+        wrapper.__lets_arg_matchers__ = list(zip(arg_matchers, remember_names))
         return wrapper
     return decorator
 

@@ -35,6 +35,7 @@ API methods are called directly from this module the resolved namespace is
 ``"test"`` (provided by the module-level constant below).
 """
 
+import os
 import pathlib
 import tempfile
 import unittest
@@ -42,7 +43,7 @@ from unittest.mock import patch, MagicMock
 
 import lets.core as core_module
 from lets.api import ExecutionEnvironment, Lets, args, verb
-from lets.core import LetsExcept
+from lets.core import LetsExcept, _split_regex_alternatives
 
 # Required so that _get_namespace() resolves to "test" when Lets methods are
 # called directly from test functions in this module.
@@ -437,6 +438,269 @@ class TestBuiltinVerbs(LetsTestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Completion (triggered by the LETS_COMPLETE environment variable)
+# ---------------------------------------------------------------------------
+
+class TestComplete(LetsTestCase):
+
+    def _printed_lines(self, mock_print):
+        return [str(call[0][0]) for call in mock_print.call_args_list]
+
+    def _run_complete(self, lets, args):
+        """Run lets with LETS_COMPLETE set; return (result, printed lines)."""
+        with patch("builtins.print") as mock_print, \
+             patch.dict(os.environ, {"LETS_COMPLETE": "1"}):
+            result = lets._process_arguments(list(args))
+        return result, self._printed_lines(mock_print)
+
+    def test_complete_no_context_lists_first_words(self):
+        def my_verb(lets_instance, _verb, args):
+            return 0
+
+        lets = self._make_lets_with_verb("greet", my_verb)
+        result, lines = self._run_complete(lets, [])
+        self.assertEqual(result, 0)
+        self.assertIn("greet", lines)
+        self.assertIn("help", lines)
+
+    def test_complete_verb_with_regex_option(self):
+        @args(r"debug|release", remember=["flavor"])
+        @verb("bld")
+        def fn(*a, **k):
+            return 0
+
+        lets = _make_lets_with_args_verb("bld", fn)
+        result, lines = self._run_complete(lets, ["bld"])
+        self.assertEqual(result, 0)
+        self.assertIn("flavor=debug|release", lines)
+
+    def test_complete_verb_with_callable_option(self):
+        def matcher(lets_instance, args):
+            return [], args
+
+        matcher.__lets_options__ = ["alpha", "beta"]
+
+        @args(matcher, remember=["choice"])
+        @verb("ch")
+        def fn(*a, **k):
+            return 0
+
+        lets = _make_lets_with_args_verb("ch", fn)
+        result, lines = self._run_complete(lets, ["ch"])
+        self.assertEqual(result, 0)
+        self.assertIn("choice=alpha|beta", lines)
+
+    def test_complete_callable_option_accepts_lets_instance(self):
+        def options_provider(lets_instance):
+            return ["x", "y"]
+
+        def matcher(lets_instance, args):
+            return [], args
+
+        matcher.__lets_options__ = options_provider
+
+        @args(matcher, remember=["choice"])
+        @verb("ch2")
+        def fn(*a, **k):
+            return 0
+
+        lets = _make_lets_with_args_verb("ch2", fn)
+        result, lines = self._run_complete(lets, ["ch2"])
+        self.assertEqual(result, 0)
+        self.assertIn("choice=x|y", lines)
+
+    def test_complete_shows_matchers_without_remember(self):
+        @args("clean")
+        @verb("cl")
+        def fn(*a, **k):
+            return 0
+
+        lets = _make_lets_with_args_verb("cl", fn)
+        result, lines = self._run_complete(lets, ["cl"])
+        self.assertEqual(result, 0)
+        self.assertEqual(lines, ["clean"])
+
+    def test_complete_excludes_provided_unremembered_option(self):
+        @args("clean")
+        @verb("cl2")
+        def fn(*a, **k):
+            return 0
+
+        lets = _make_lets_with_args_verb("cl2", fn)
+        result, lines = self._run_complete(lets, ["cl2", "clean"])
+        self.assertEqual(result, 0)
+        self.assertEqual(lines, [])
+
+    def test_complete_mixes_remembered_and_unremembered(self):
+        @args(r"debug|release", remember=["flavor"])
+        @args("clean")
+        @verb("bld5")
+        def fn(*a, **k):
+            return 0
+
+        lets = _make_lets_with_args_verb("bld5", fn)
+        result, lines = self._run_complete(lets, ["bld5"])
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            lines,
+            ["flavor=debug|release", "clean"],
+        )
+
+    def test_complete_prefix_lists_matching_verbs(self):
+        def greet_fn(lets_instance, _verb, args):
+            return 0
+
+        def greeting_fn(lets_instance, _verb, args):
+            return 0
+
+        core_module._registered_verbs.clear()
+        core_module._registered_verbs.append({"name": ["greet"], "func": greet_fn, "namespace": "test"})
+        core_module._registered_verbs.append({"name": ["greeting"], "func": greeting_fn, "namespace": "test"})
+        lets = Lets()
+        lets._registered_settings.setdefault("test", {})["_remember"] = {
+            "description": "", "options": None, "value": {}, "type": dict
+        }
+        result, lines = self._run_complete(lets, ["gre"])
+        self.assertEqual(result, 0)
+        self.assertIn("greet", lines)
+        self.assertIn("greeting", lines)
+
+    def test_complete_excludes_provided_regex_option(self):
+        @args(r"debug|release", remember=["flavor"])
+        @verb("bld2")
+        def fn(*a, **k):
+            return 0
+
+        lets = _make_lets_with_args_verb("bld2", fn)
+        result, lines = self._run_complete(lets, ["bld2", "debug"])
+        self.assertEqual(result, 0)
+        self.assertEqual(lines, [])
+
+    def test_complete_keeps_unmatched_option(self):
+        def matcher(lets_instance, args):
+            return [], args
+
+        matcher.__lets_options__ = ["alpha", "beta"]
+
+        @args(matcher, remember=["choice"])
+        @args(r"debug|release", remember=["flavor"])
+        @verb("bld3")
+        def fn(*a, **k):
+            return 0
+
+        lets = _make_lets_with_args_verb("bld3", fn)
+        result, lines = self._run_complete(lets, ["bld3", "debug"])
+        self.assertEqual(result, 0)
+        self.assertNotIn("flavor=debug|release", lines)
+        self.assertIn("choice=alpha|beta", lines)
+
+    def test_complete_excludes_provided_callable_option(self):
+        def matcher(lets_instance, args):
+            return [], args
+
+        matcher.__lets_options__ = ["alpha", "beta"]
+
+        @args(matcher, remember=["choice"])
+        @verb("ch3")
+        def fn(*a, **k):
+            return 0
+
+        lets = _make_lets_with_args_verb("ch3", fn)
+        result, lines = self._run_complete(lets, ["ch3", "alpha"])
+        self.assertEqual(result, 0)
+        self.assertEqual(lines, [])
+
+    def test_complete_keeps_option_when_arg_matches_nothing(self):
+        @args(r"debug|release", remember=["flavor"])
+        @verb("bld4")
+        def fn(*a, **k):
+            return 0
+
+        lets = _make_lets_with_args_verb("bld4", fn)
+        result, lines = self._run_complete(lets, ["bld4", "unknown"])
+        self.assertEqual(result, 0)
+        self.assertIn("flavor=debug|release", lines)
+
+    def test_complete_set_lists_settings_as_config_name(self):
+        result, lines = self._run_complete(self.lets, ["set"])
+        self.assertEqual(result, 0)
+        # Protected settings (e.g. '_remember') must not be listed.
+        self.assertIn("config_name=lets.plugins|lets.verbose", lines)
+
+    def test_complete_get_lists_settings_as_config_name(self):
+        result, lines = self._run_complete(self.lets, ["get"])
+        self.assertEqual(result, 0)
+        self.assertIn("config_name=lets.plugins|lets.verbose", lines)
+
+    def test_complete_set_lists_settings_of_other_namespaces(self):
+        self.lets.register_setting("speed", "speed setting", None, 10)
+        result, lines = self._run_complete(self.lets, ["set"])
+        self.assertEqual(result, 0)
+        self.assertIn("config_name=lets.plugins|lets.verbose|test.speed", lines)
+
+    def test_complete_set_excludes_provided_setting(self):
+        result, lines = self._run_complete(self.lets, ["set", "verbose"])
+        self.assertEqual(result, 0)
+        self.assertEqual(lines, [])
+
+    def test_complete_set_excludes_provided_qualified_setting(self):
+        result, lines = self._run_complete(self.lets, ["set", "lets.plugins"])
+        self.assertEqual(result, 0)
+        self.assertEqual(lines, [])
+
+    def test_complete_multivword_prefix_matches_second_word(self):
+        def show_apps_fn(lets_instance, _verb, args):
+            return 0
+
+        def show_boards_fn(lets_instance, _verb, args):
+            return 0
+
+        core_module._registered_verbs.clear()
+        core_module._registered_verbs.append(
+            {"name": ["show", "apps"], "func": show_apps_fn, "namespace": "test"})
+        core_module._registered_verbs.append(
+            {"name": ["show", "boards"], "func": show_boards_fn, "namespace": "test"})
+        lets = Lets()
+        lets._registered_settings.setdefault("test", {})["_remember"] = {
+            "description": "", "options": None, "value": {}, "type": dict
+        }
+        result, lines = self._run_complete(lets, ["show", "a"])
+        self.assertEqual(result, 0)
+        # 'show a' is a prefix of 'show apps' but not of 'show boards' or 'add'.
+        self.assertEqual(lines, ["show apps"])
+
+    def test_complete_multivword_prefix_first_word_only(self):
+        def show_apps_fn(lets_instance, _verb, args):
+            return 0
+
+        def show_boards_fn(lets_instance, _verb, args):
+            return 0
+
+        core_module._registered_verbs.clear()
+        core_module._registered_verbs.append(
+            {"name": ["show", "apps"], "func": show_apps_fn, "namespace": "test"})
+        core_module._registered_verbs.append(
+            {"name": ["show", "boards"], "func": show_boards_fn, "namespace": "test"})
+        lets = Lets()
+        lets._registered_settings.setdefault("test", {})["_remember"] = {
+            "description": "", "options": None, "value": {}, "type": dict
+        }
+        result, lines = self._run_complete(lets, ["show"])
+        self.assertEqual(result, 0)
+        self.assertIn("show apps", lines)
+        self.assertIn("show boards", lines)
+
+    def test_split_regex_alternatives(self):
+        self.assertEqual(_split_regex_alternatives("debug|release"), ["debug", "release"])
+        self.assertEqual(_split_regex_alternatives("a|b|c"), ["a", "b", "c"])
+        self.assertEqual(_split_regex_alternatives("(a|b)|c"), ["(a|b)", "c"])
+        self.assertEqual(_split_regex_alternatives("noalternatives"), ["noalternatives"])
+        self.assertEqual(_split_regex_alternatives("[a|b]"), ["[a|b]"])
+
+
+# ---------------------------------------------------------------------------
+# Output helpers: info / warning / error / verbose
 # ---------------------------------------------------------------------------
 # Output helpers: info / warning / error / verbose
 # ---------------------------------------------------------------------------
