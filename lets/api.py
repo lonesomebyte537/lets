@@ -132,7 +132,7 @@ def args(*arg_matchers: ArgMatcher, exact: Optional[bool] = False, remember: Opt
                     matches = lets._remember_setting(remember[idx], matches, namespace)
                 if exact:
                     if len(matches) != 1:
-                        raise LetsExcept(f"Expected exactly one match, found {'none' if not matches else f'{', '.join(matches)}'}")
+                        raise LetsExcept(f"Expected exactly one match, found {'none' if not matches else f'{', '.join(matches)}'} {"" if callable(matcher) else "for " + matcher}")
                     matches = matches[0]
                 extracted_args.append(matches)  # Append the list of matches
 
